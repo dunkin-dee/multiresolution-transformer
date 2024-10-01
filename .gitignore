@@ -5,3 +5,5 @@ recent_data/
 __pycache__/
 data/
 binary_attempt.ipynb
+*.h5
+*.csv

@@ -3,6 +3,10 @@ import pandas as pd
 from process_data import clean_cols, clean_non_minute_rows, normalize_by_window, label_df
 
 
+def useless_func():
+	if True:
+		return
+
 if __name__ == "__main__":
 
     if not os.path.exists(f'training'):

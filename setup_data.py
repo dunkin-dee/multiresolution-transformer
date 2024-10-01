@@ -26,8 +26,10 @@ if __name__ == "__main__":
         df = clean_cols(df)
         df = clean_non_minute_rows(df)
 
+        window_size = 60*3
+
         print("Normalizing...")
-        df = normalize_by_window(df, window_size=60*3)
+        df = normalize_by_window(df, window_size=window_size)
 
         print("Labeling...")
         df = label_df(df, multiplier=4)

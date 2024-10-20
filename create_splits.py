@@ -13,7 +13,6 @@ cols = [
     'target'
     ]
 
-cols = cols[:5]
 
 # Iterate through each subfolder and CSV file
 for folder in os.listdir(data_folder):

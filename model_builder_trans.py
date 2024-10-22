@@ -87,9 +87,13 @@ def combined_loss(y_true, y_pred):
 
 def build_transformer_model(input_shape, d_model=64, num_heads=2, ff_dim=128, num_layers=4, training=True):
     inputs = Input(shape=input_shape)
+
+    print(inputs.shape)
     
     # Project the input (4 features per token) to the embedding dimension (d_model)
     x = Dense(d_model)(inputs)
+
+    print(x.shape)
     
     # Positional Encoding
     x = PositionalEncoding(input_shape[0], d_model)(x)

@@ -81,7 +81,7 @@ def combined_loss(y_true, y_pred):
     bce = tf.keras.losses.binary_crossentropy(y_true, y_pred)
     precision = precision_loss(y_true, y_pred)
     auc = auc_loss(y_true, y_pred)
-    return bce + 0.3*auc + 0.2*precision
+    return bce + 0.3*auc + 0.3*precision
 
 def build_combined_model(transformer_input_shape, cnn_input_shape, d_model=128, num_heads=4, ff_dim=256, num_layers=4):
     # Transformer branch

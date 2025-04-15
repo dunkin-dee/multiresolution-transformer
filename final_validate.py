@@ -16,12 +16,12 @@ from tensorflow.keras import mixed_precision
 # mixed_precision.set_global_policy('mixed_float16')
 
 
-BATCH_SIZE = 256
+BATCH_SIZE = 512
 NUM_TOKENS = 128
 LOOKBACK_WINDOW = NUM_TOKENS + 1
-D_MODEL = 240
-FF_DIM = D_MODEL*2
-NUM_HEADS = D_MODEL//24
+D_MODEL = 128
+FF_DIM = 256
+NUM_HEADS = D_MODEL//16
 
 def prepare_data(file_paths, num_tokens, window_size=1440, batch_size=32, smote=False, shuffle=False, cols=['open', 'high', 'low', 'close']):
     emd_range = window_size
@@ -62,37 +62,39 @@ def prepare_data(file_paths, num_tokens, window_size=1440, batch_size=32, smote=
     if shuffle:
         np.random.shuffle(df_idx_list)
     
-    input_list = []
-    target_list = []
+    while True:
+        input_list = []
+        target_list = []
 
-    for df_name, idx in df_idx_list:
-        df_collected = df_idx_dict[df_name]
-        signal = np.array(df_collected[cols][idx - emd_range + 1:idx + 1])
+        for df_name, idx in df_idx_list:
+            df_collected = df_idx_dict[df_name]
+            signal = np.array(df_collected[cols][idx - emd_range + 1:idx + 1])
 
-        # Fetch the previous num_prev + 1 rows for the input based on the current index
-        input_rows = signal[-num_tokens:]
-        target_value = df_collected[idx, -1]  # Get 'target' for the target
+            # Fetch the previous num_prev + 1 rows for the input based on the current index
+            input_rows = signal[-num_tokens:]
+            target_value = df_collected[idx, -1]  # Get 'target' for the target
 
-        # Append the input rows to the input list
-        input_list.append(input_rows)
-        target_list.append(target_value)
+            # Append the input rows to the input list
+            input_list.append(input_rows)
+            target_list.append(target_value)
 
-        # Yield once we have enough for a batch
-        if len(input_list) == batch_size:
-            input_array = np.array(input_list)
-            target_array = np.array(target_list)
+            # Yield once we have enough for a batch
+            if len(input_list) == batch_size:
+                input_array = np.array(input_list)
+                target_array = np.array(target_list)
 
-            # Convert NumPy arrays to TensorFlow tensors
-            input_tensor = tf.convert_to_tensor(input_array, dtype=tf.float32)
-            target_tensor = tf.convert_to_tensor(target_array, dtype=tf.int32)
+                # Convert NumPy arrays to TensorFlow tensors
+                input_tensor = tf.convert_to_tensor(input_array, dtype=tf.float32)
+                target_tensor = tf.convert_to_tensor(target_array, dtype=tf.int32)
 
-            yield input_tensor, target_tensor
+                yield input_tensor, target_tensor
 
-            # Reset lists for the next batch
+                # Reset lists for the next batch
 
-            input_list.clear()
-            target_list.clear()
+                input_list.clear()
+                target_list.clear()
 
+        break
 
 def create_dataset_generator(file_paths, batch_size, num_tokens, window_size=LOOKBACK_WINDOW, shuffle=False, repeat=False, smote=False, cols=['open', 'high', 'low', 'close']):
     dataset = tf.data.Dataset.from_generator(
@@ -126,12 +128,9 @@ def get_total_rows(file_paths, num_tokens, smote=False):
     return return_rows
 
 
-# train_paths = [os.path.join('ready_data/train/', f) for f in os.listdir('ready_data/train')]
-# val_paths = [os.path.join('ready_data/val/', f) for f in os.listdir('ready_data/val')]
-# test_paths = [os.path.join('ready_data/test/', f) for f in os.listdir('ready_data/test')]
-train_paths = ["ready_data/train/GBPUSD.csv"]
-val_paths = ["ready_data/val/GBPUSD.csv"]
-test_paths = ["ready_data/val/GBPUSD.csv"]
+train_paths = [os.path.join('ready_data/train/', f) for f in os.listdir('ready_data/train')]
+val_paths = [os.path.join('ready_data/val/', f) for f in os.listdir('ready_data/val')]
+test_paths = [os.path.join('ready_data/test/', f) for f in os.listdir('ready_data/test')]
 
 cols = [
     'open_normalized',
@@ -173,7 +172,7 @@ class PositionalEncoding(tf.keras.layers.Layer):
 
 @tf.keras.utils.register_keras_serializable()
 class TransformerBlock(tf.keras.layers.Layer):
-    def __init__(self, embed_dim, num_heads, ff_dim, rate=0.2, weight_decay=1e-6):
+    def __init__(self, embed_dim, num_heads, ff_dim, rate=0.2, weight_decay=5e-5):
         super(TransformerBlock, self).__init__()
         self.att = tf.keras.layers.MultiHeadAttention(num_heads=num_heads, key_dim=embed_dim)
         
@@ -210,32 +209,31 @@ input_shape = (NUM_TOKENS, 4)
 input_layer = Input(shape=input_shape)
 x = Conv1D(filters=D_MODEL//2, kernel_size=3, activation='relu', padding="same")(input_layer)
 x = Conv1D(filters=D_MODEL, kernel_size=3, activation='relu', padding="same")(x)
-x = Conv1D(filters=D_MODEL, kernel_size=3, activation='relu', padding="same")(x)
 x = MaxPooling1D(pool_size=2, padding="same")(x)
 x = Dropout(0.1)(x)
 x = PositionalEncoding(x.shape[1], d_model=D_MODEL)(x)
 x = TransformerBlock(D_MODEL, NUM_HEADS, FF_DIM)(x, training=True)
-# x = Dropout(0.1)(x)
-# x = TransformerBlock(D_MODEL, NUM_HEADS, FF_DIM)(x, training=True)
-# x = Dropout(0.1)(x)
-# x = TransformerBlock(D_MODEL, NUM_HEADS, FF_DIM)(x, training=True)
-# x = Dropout(0.1)(x)
-# x = TransformerBlock(D_MODEL, NUM_HEADS, FF_DIM)(x, training=True)
-# x = Dropout(0.1)(x)
-# x = TransformerBlock(D_MODEL, NUM_HEADS, FF_DIM)(x, training=True)
-# x = Dropout(0.1)(x)
-# x = TransformerBlock(D_MODEL, NUM_HEADS, FF_DIM)(x, training=True)
+x = Dropout(0.1)(x)
+x = TransformerBlock(D_MODEL, NUM_HEADS, FF_DIM)(x, training=True)
+x = Dropout(0.1)(x)
+x = TransformerBlock(D_MODEL, NUM_HEADS, FF_DIM)(x, training=True)
+x = Dropout(0.1)(x)
+x = TransformerBlock(D_MODEL, NUM_HEADS, FF_DIM)(x, training=True)
+x = Dropout(0.1)(x)
+x = TransformerBlock(D_MODEL, NUM_HEADS, FF_DIM)(x, training=True)
+x = Dropout(0.1)(x)
+x = TransformerBlock(D_MODEL, NUM_HEADS, FF_DIM)(x, training=True)
 x = Dropout(0.2)(x)
 x = tf.keras.layers.GlobalAveragePooling1D()(x)
 x = Dropout(0.2)(x)
 outputs = Dense(1, activation='sigmoid')(x)
 model = Model(inputs=input_layer, outputs=outputs)
 
-model.load_weights("working/base_model copy.keras", skip_mismatch=True)
+model.load_weights("base_model.keras", skip_mismatch=True)
 
 model.summary()
 
-learning_rate = 5e-4  # Adjust this value as needed
+learning_rate = 2e-5  # Adjust this value as needed
 optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
 # optimizer = mixed_precision.LossScaleOptimizer(optimizer)
 
@@ -246,24 +244,28 @@ model.compile(
     loss=combined_loss, 
     metrics=['accuracy',auc, prec])
 
-early_stopping = EarlyStopping(monitor='val_precision_1', 
-                               patience=10, # Stops if there's no improvement in precision for 5 epochs
-                               mode='max', 
-                               verbose=1)
 
-model_checkpoint = ModelCheckpoint('base_model.keras', 
-                                   monitor='val_precision_1', 
-                                   save_best_only=True, 
-                                   mode='max', 
-                                   verbose=1)
+model.evaluate(val_dataset, steps=val_steps)
 
+# early_stopping = EarlyStopping(monitor='val_precision_1', 
+#                                patience=10, # Stops if there's no improvement in precision for 5 epochs
+#                                mode='max', 
+#                                verbose=1)
 
-# Train the model using the train and validation datasets
-history = model.fit(
-    train_dataset,
-    epochs=50,
-    steps_per_epoch = train_steps,
-    validation_data=val_dataset,
-    validation_steps=val_steps,
-    callbacks=[early_stopping, model_checkpoint]
-)
+# model_checkpoint = ModelCheckpoint('base_model.keras', 
+#                                    monitor='val_precision_1', 
+#                                    save_best_only=True, 
+#                                    mode='max', 
+#                                    verbose=1)
+
+# # model.load_weights('best_cnn_trans_model.keras')
+
+# # Train the model using the train and validation datasets
+# history = model.fit(
+#     train_dataset,
+#     epochs=50,
+#     steps_per_epoch = train_steps,
+#     validation_data=val_dataset,
+#     validation_steps=val_steps,
+#     callbacks=[early_stopping, model_checkpoint]
+# )

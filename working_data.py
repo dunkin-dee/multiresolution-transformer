@@ -130,7 +130,9 @@ def alt_label_df(df, window_size=60, mean_multiplier=4, positive_slope=0.4, cur_
 def split_df(
         df, 
         dump_path, 
-        train_size=0.7, 
+        train_size=0.7,
+        chunk_size=1000,
+        lookback=30,
         cols=[
     'open_normalized',
     'high_normalized',
@@ -140,9 +142,62 @@ def split_df(
     ]):
 
     df = df[cols]
-
     train_data, temp_data = train_test_split(df, test_size=1-train_size, shuffle=False)
     val_data, test_data = train_test_split(temp_data, test_size=0.50, shuffle=False)
+    val_data = val_data[lookback:]
+    test_data = test_data[lookback:]
     train_data.to_csv(os.path.join(dump_path, 'train.csv'), index=False)
     val_data.to_csv(os.path.join(dump_path, 'val.csv'), index=False)
     test_data.to_csv(os.path.join(dump_path, 'test.csv'), index=False)
+
+
+def chunky_split_df(
+        df, 
+        dump_path, 
+        train_size=0.7,
+        chunk_size=1000,
+        lookback=30,
+        cols=[
+            'open_normalized',
+            'high_normalized',
+            'low_normalized',
+            'close_normalized',
+            'target'
+        ]):
+    # Select only desired columns
+    df = df[cols]
+    
+    # Initialize empty dataframes to collect the splits
+    super_train_df = pd.DataFrame(columns=cols)
+    super_val_df = pd.DataFrame(columns=cols)
+    super_test_df = pd.DataFrame(columns=cols)
+    
+    # Process the dataframe in chunks
+    for start in range(0, len(df), chunk_size):
+        chunk = df.iloc[start:start+chunk_size]
+        
+        # Split chunk into training and temporary (val + test) sets
+        train_chunk, temp_chunk = train_test_split(chunk, test_size=1 - train_size, shuffle=False)
+        
+        # Split temporary set equally into validation and test sets
+        val_chunk, test_chunk = train_test_split(temp_chunk, test_size=0.5, shuffle=False)
+        
+        # Apply lookback slice to validation and test sets
+        if len(val_chunk) > lookback:
+            val_chunk = val_chunk.iloc[lookback:]
+        else:
+            val_chunk = pd.DataFrame(columns=cols)
+        if len(test_chunk) > lookback:
+            test_chunk = test_chunk.iloc[lookback:]
+        else:
+            test_chunk = pd.DataFrame(columns=cols)
+        
+        # Append the results to the super dataframes
+        super_train_df = pd.concat([super_train_df, train_chunk], ignore_index=True)
+        super_val_df = pd.concat([super_val_df, val_chunk], ignore_index=True)
+        super_test_df = pd.concat([super_test_df, test_chunk], ignore_index=True)
+    
+    # Save the combined datasets to CSV files
+    super_train_df.to_csv(os.path.join(dump_path, 'train.csv'), index=False)
+    super_val_df.to_csv(os.path.join(dump_path, 'val.csv'), index=False)
+    super_test_df.to_csv(os.path.join(dump_path, 'test.csv'), index=False)

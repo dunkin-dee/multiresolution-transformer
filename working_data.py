@@ -131,7 +131,6 @@ def split_df(
         df, 
         dump_path, 
         train_size=0.7,
-        chunk_size=1000,
         lookback=30,
         cols=[
     'open_normalized',

@@ -16,6 +16,13 @@ def clean_non_minute_rows(df):
         return df
     return df[cut_off:]
 
+def add_rsi(df):
+    df['rsi'] = talib.RSI(df['close'], timeperiod=14)
+    df['rsi'] = df['rsi']/100
+    print(df.tail())
+    return df
+
+
 def add_bollinger_bands(df):
     df['upper'], df['middle'], df['lower'] = talib.BBANDS(df['close'])
     return df

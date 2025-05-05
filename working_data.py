@@ -23,6 +23,38 @@ def add_rsi(df):
     return df
 
 
+def add_hour_position(df):
+    """
+    Adds hour position features to the dataframe.
+    Assumes 'time' column contains Unix timestamps.
+    
+    Returns:
+    - DataFrame with added hour position features:
+      - hour_position: Normalized position in hour (0 to 1)
+      - hour_position_sin: Sine component of the cyclic hour position
+      - hour_position_cos: Cosine component of the cyclic hour position
+    """
+    # Convert Unix timestamp to datetime if not already done
+    if not pd.api.types.is_datetime64_any_dtype(df['time']):
+        df['datetime'] = pd.to_datetime(df['time'], unit='s')
+    
+    # Calculate position in the hour (0-11 for 5-minute intervals)
+    df['minute_in_hour'] = df['datetime'].dt.minute
+    df['interval_in_hour'] = df['minute_in_hour'] // 5  # 0 to 11
+    
+    # Create normalized position (0 to 1)
+    df['hour_position'] = df['interval_in_hour'] / 12
+    
+    # Create sine and cosine components to capture cyclic nature
+    df['hour_position_sin'] = np.sin(2 * np.pi * df['hour_position'])
+    df['hour_position_cos'] = np.cos(2 * np.pi * df['hour_position'])
+    
+    # Drop intermediate columns
+    df.drop(columns=['minute_in_hour', 'interval_in_hour'], inplace=True)
+    
+    return df
+
+
 def add_bollinger_bands(df):
     df['upper'], df['middle'], df['lower'] = talib.BBANDS(df['close'])
     return df

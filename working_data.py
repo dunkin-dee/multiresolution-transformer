@@ -149,7 +149,7 @@ def alt_label_df(df, window_size=60, mean_multiplier=4, positive_slope=0.4, cur_
         if row['candle'] < acceptable_candle:
             continue
         target_signal = row['close_normalized'] + mean_candle * mean_multiplier
-        end_signal = row['close_normalized'] - (mean_candle * 2)
+        end_signal = row['close_normalized'] - (mean_candle * 1)
         cur_close = row['close_normalized']
 
         for mini_index in range(index + 1, index + window_size):

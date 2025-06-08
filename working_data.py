@@ -161,7 +161,7 @@ def label_df(df, window_size=20, mean_multiplier=4, positive_slope=0.4, negative
     df['prev_close'] = df['close'].shift(1)
     df['prev_open'] = df['open'].shift(1)
 
-    mask = (df[sum_cols].max(axis=1) > mean_candle*mean_multiplier) & (df['close_normalized']<negative_slope) & (df['close_normalized']>positive_slope) & ((df['candle']>mean_candle*cur_candle_multiplier) | (df['prev_candle'] > 0) | (df['close'] > df[['prev_close', 'prev_open']].max(axis=1))) & (df['candle'] > 0)
+    mask = (df[sum_cols].max(axis=1) >= mean_candle*mean_multiplier) & (df['close_normalized']<negative_slope) & (df['close_normalized']>positive_slope) & ((df['candle']>mean_candle*cur_candle_multiplier) | (df['prev_candle'] > 0) | (df['close'] > df[['prev_close', 'prev_open']].max(axis=1))) & (df['candle'] > 0)
     df.loc[mask, 'target'] = 1
 
     drop_cols = future_cols + sum_cols + ['candle', 'prev_candle', 'prev_close', 'prev_open', 'close_normalized_for_label','open_normalized_for_label', 'open', 'high', 'low', 'close']

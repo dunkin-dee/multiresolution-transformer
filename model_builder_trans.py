@@ -81,7 +81,6 @@ def combined_loss(y_true, y_pred):
     bce = tf.keras.losses.binary_crossentropy(y_true, y_pred)
     precision = precision_loss(y_true, y_pred)
     auc = auc_loss(y_true, y_pred)
-    return bce
     return bce + 0.5*auc + 0.3*precision
 
 # Positional Encoding remains the same

@@ -105,8 +105,41 @@ def normalize_by_window(
     df.drop(columns=['window_max', 'window_min', 'window_max_prev', 'window_min_prev'], inplace=True)
     return df[window_size:]
 
+def normalize_by_window_v2(
+        df, 
+        window_size=1440, 
+        chunk_size=20, 
+        normalizing_cols=[
+            'open',
+            'high',
+            'low',
+            'close']):
+    """
+    Alternative implementation using pandas rolling functions for better performance
+    and clearer exclusion of current values.
+    """
+    # Calculate rolling min/max excluding current row
+    df['window_max'] = df['high'].shift(1).rolling(window=window_size, min_periods=1).max()
+    df['window_min'] = df['low'].shift(1).rolling(window=window_size, min_periods=1).min()
+    
+    # Normalize columns using historical min/max
+    for normalizing_col in normalizing_cols:
+        df[f"{normalizing_col}_normalized"] = (df[normalizing_col] - df['window_min'])/(df['window_max'] - df['window_min'])
 
-def label_df(df, window_size=20, mean_multiplier=4, positive_slope=0.4, cur_candle_multiplier=2):
+    # For labels, use the previous period's normalization range
+    df['window_max_prev'] = df['window_max'].shift(1)
+    df['window_min_prev'] = df['window_min'].shift(1)
+
+    df['open_normalized_for_label'] = (df['open'] - df['window_min_prev'])/(df['window_max_prev'] - df['window_min_prev'])
+    df['close_normalized_for_label'] = (df['close'] - df['window_min_prev'])/(df['window_max_prev'] - df['window_min_prev'])
+    
+    # Clean up temporary columns
+    df.drop(columns=['window_max', 'window_min', 'window_max_prev', 'window_min_prev'], inplace=True)
+    
+    return df[window_size:]
+
+
+def label_df(df, window_size=20, mean_multiplier=4, positive_slope=0.4, negative_slope=0.8, cur_candle_multiplier=2):
 
     df['candle'] = df['close_normalized_for_label'] - df['open_normalized_for_label']
     mean_candle = df['candle'].abs().mean()
@@ -128,7 +161,7 @@ def label_df(df, window_size=20, mean_multiplier=4, positive_slope=0.4, cur_cand
     df['prev_close'] = df['close'].shift(1)
     df['prev_open'] = df['open'].shift(1)
 
-    mask = (df[sum_cols].max(axis=1) > mean_candle*mean_multiplier) & (df['close_normalized']>positive_slope) & ((df['candle']>mean_candle*cur_candle_multiplier) | (df['prev_candle'] > 0) | (df['close'] > df[['prev_close', 'prev_open']].max(axis=1))) & (df['candle'] > 0)
+    mask = (df[sum_cols].max(axis=1) > mean_candle*mean_multiplier) & (df['close_normalized']<negative_slope) & (df['close_normalized']>positive_slope) & ((df['candle']>mean_candle*cur_candle_multiplier) | (df['prev_candle'] > 0) | (df['close'] > df[['prev_close', 'prev_open']].max(axis=1))) & (df['candle'] > 0)
     df.loc[mask, 'target'] = 1
 
     drop_cols = future_cols + sum_cols + ['candle', 'prev_candle', 'prev_close', 'prev_open', 'close_normalized_for_label','open_normalized_for_label', 'open', 'high', 'low', 'close']
@@ -137,7 +170,7 @@ def label_df(df, window_size=20, mean_multiplier=4, positive_slope=0.4, cur_cand
     return df[1:-window_size]
 
 
-def alt_label_df(df, window_size=60, mean_multiplier=4, positive_slope=0.4, cur_candle_multiplier=2):
+def alt_label_df(df, window_size=60, mean_multiplier=4, positive_slope=0.4, negative_slope=0.8,cur_candle_multiplier=2):
     df = df.reset_index(drop=True)  # Reset the index
     df['candle'] = df['close_normalized_for_label'] - df['open_normalized_for_label']
     df['target'] = 0
@@ -147,6 +180,8 @@ def alt_label_df(df, window_size=60, mean_multiplier=4, positive_slope=0.4, cur_
     for index in range(0, len(df) - window_size):
         row = df.iloc[index]
         if row['candle'] < acceptable_candle:
+            continue
+        if row['close_normalized'] > negative_slope or row['close_normalized'] < positive_slope:
             continue
         target_signal = row['close_normalized'] + mean_candle * mean_multiplier
         end_signal = row['close_normalized'] - (mean_candle * 1)
@@ -163,6 +198,54 @@ def alt_label_df(df, window_size=60, mean_multiplier=4, positive_slope=0.4, cur_
 
     return df[:len(df) - window_size]
 
+def alt_label_df_raw(df, window_size=60, mean_multiplier=4, positive_slope=0.4, negative_slope=0.8, cur_candle_multiplier=2):
+    """
+    Label buying opportunities using raw price values instead of normalized values
+    to avoid missing opportunities at the top of normalization curves.
+    """
+    df = df.reset_index(drop=True)
+    
+    # Calculate raw candle size using actual OHLC values
+    df['candle_raw'] = df['close'] - df['open']
+    df['target'] = 0
+    
+    # Use absolute candle size for mean calculation
+    mean_candle_raw = df['candle_raw'].abs().mean()
+    acceptable_candle_raw = mean_candle_raw * cur_candle_multiplier
+    
+    for index in range(0, len(df) - window_size):
+        row = df.iloc[index]
+        
+        # Filter based on raw candle size
+        if abs(row['candle_raw']) < acceptable_candle_raw:
+            continue
+
+        if row['close_normalized'] < positive_slope or row['close_normalized'] > negative_slope:
+            continue
+            
+        # Set target and end signals based on raw close price
+        target_signal = row['close'] + (mean_candle_raw * mean_multiplier)
+        end_signal = row['close'] - (mean_candle_raw * 1)
+        
+        # Track cumulative price movement using raw values
+        cur_close = row['close']
+        
+        for mini_index in range(index + 1, index + window_size):
+            mini_row = df.iloc[mini_index]
+            
+            # Exit if price drops below end signal
+            if mini_row['close'] < end_signal:
+                break
+                
+            # Add raw candle movement to current price
+            cur_close += mini_row['candle_raw']
+            
+            # Check if target is reached using raw price
+            if cur_close > target_signal:
+                df.at[index, 'target'] = 1
+                break
+    
+    return df[:len(df) - window_size]
 
 
 

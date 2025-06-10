@@ -6,7 +6,7 @@ from sklearn.model_selection import train_test_split
 
 
 def clean_cols(df):
-    clear_cols = ['tick_volume', 'spread', 'real_volume']
+    clear_cols = ['spread', 'real_volume']
     df.drop(columns=clear_cols, inplace=True)
     return df
 
@@ -19,7 +19,6 @@ def clean_non_minute_rows(df):
 def add_rsi(df):
     df['rsi'] = talib.RSI(df['close'], timeperiod=14)
     df['rsi'] = df['rsi']/100
-    print(df.tail())
     return df
 
 
@@ -59,50 +58,119 @@ def add_bollinger_bands(df):
     df['upper'], df['middle'], df['lower'] = talib.BBANDS(df['close'])
     return df
 
+# def normalize_by_window(
+#         df, 
+#         window_size=1440, 
+#         chunk_size=20, 
+#         normalizing_cols=[
+#             'open',
+#             'high',
+#             'low',
+#             'close']):
+#     col_numbers = range(1, window_size+1)
+#     col_split = [col_numbers[i:i + chunk_size] for i in range(0, len(col_numbers), chunk_size)]
+#     df['window_min'] = df['low']
+#     df['window_max'] = df['high']
+
+#     for col_range in col_split:
+#         high_cols = []
+#         low_cols = []
+        
+#         for x in col_range:
+#             high_col_name = f"high-{x}"
+#             df[high_col_name] = df['high'].shift(x)
+#             high_cols.append(high_col_name)
+#         high_cols_inclusive = high_cols + ['window_max']
+#         df['window_max'] = df[high_cols_inclusive].max(axis=1)
+#         df.drop(columns=high_cols, inplace=True)
+
+#         for x in col_range:
+#             low_col_name = f"low-{x}"
+#             df[low_col_name] = df['low'].shift(x)
+#             low_cols.append(low_col_name)
+#         low_cols_inclusive = low_cols + ['window_min']
+#         df['window_min'] = df[low_cols_inclusive].min(axis=1)
+#         df.drop(columns=low_cols, inplace=True)
+
+#     for normalizing_col in normalizing_cols:
+#         df[f"{normalizing_col}_normalized"] = (df[normalizing_col] - df['window_min'])/(df['window_max'] - df['window_min'])
+
+
+#     df['window_max_prev'] = df['window_max'].shift(1)
+#     df['window_min_prev'] = df['window_min'].shift(1)
+
+#     df['open_normalized_for_label'] = (df['open'] - df['window_min_prev'])/(df['window_max_prev'] - df['window_min_prev'])
+#     df['close_normalized_for_label'] = (df['close'] - df['window_min_prev'])/(df['window_max_prev'] - df['window_min_prev'])
+#     df.drop(columns=['window_max', 'window_min', 'window_max_prev', 'window_min_prev'], inplace=True)
+#     return df[window_size:]
+
 def normalize_by_window(
         df, 
+        high_col='high',
+        low_col='low',
         window_size=1440, 
         chunk_size=20, 
         normalizing_cols=[
             'open',
             'high',
             'low',
-            'close']):
+            'close'],
+        label_cols=[]):
+    """
+    Normalize columns by rolling window min/max values.
+    
+    Parameters:
+    - df: DataFrame to normalize
+    - high_col: Column name containing high values
+    - low_col: Column name containing low values  
+    - window_size: Size of rolling window for min/max calculation
+    - chunk_size: Size of chunks to process at once (for memory efficiency)
+    - normalizing_cols: List of columns to normalize using current window
+    - label_cols: List of columns to normalize using previous window (for labels)
+    
+    Returns:
+    - DataFrame with normalized columns, trimmed to remove first window_size rows
+    """
     col_numbers = range(1, window_size+1)
     col_split = [col_numbers[i:i + chunk_size] for i in range(0, len(col_numbers), chunk_size)]
-    df['window_min'] = df['low']
-    df['window_max'] = df['high']
+    df['window_min'] = df[low_col]
+    df['window_max'] = df[high_col]
 
     for col_range in col_split:
         high_cols = []
         low_cols = []
         
         for x in col_range:
-            high_col_name = f"high-{x}"
-            df[high_col_name] = df['high'].shift(x)
+            high_col_name = f"{high_col}-{x}"
+            df[high_col_name] = df[high_col].shift(x)
             high_cols.append(high_col_name)
         high_cols_inclusive = high_cols + ['window_max']
         df['window_max'] = df[high_cols_inclusive].max(axis=1)
         df.drop(columns=high_cols, inplace=True)
 
         for x in col_range:
-            low_col_name = f"low-{x}"
-            df[low_col_name] = df['low'].shift(x)
+            low_col_name = f"{low_col}-{x}"
+            df[low_col_name] = df[low_col].shift(x)
             low_cols.append(low_col_name)
         low_cols_inclusive = low_cols + ['window_min']
         df['window_min'] = df[low_cols_inclusive].min(axis=1)
         df.drop(columns=low_cols, inplace=True)
 
+    # Normalize the main columns using current window
     for normalizing_col in normalizing_cols:
         df[f"{normalizing_col}_normalized"] = (df[normalizing_col] - df['window_min'])/(df['window_max'] - df['window_min'])
 
+    # Handle label normalization only if label_cols is not empty
+    if label_cols:
+        df['window_max_prev'] = df['window_max'].shift(1)
+        df['window_min_prev'] = df['window_min'].shift(1)
 
-    df['window_max_prev'] = df['window_max'].shift(1)
-    df['window_min_prev'] = df['window_min'].shift(1)
+        for label_col in label_cols:
+            df[f"{label_col}_normalized_for_label"] = (df[label_col] - df['window_min_prev'])/(df['window_max_prev'] - df['window_min_prev'])
+        
+        df.drop(columns=['window_max_prev', 'window_min_prev'], inplace=True)
 
-    df['open_normalized_for_label'] = (df['open'] - df['window_min_prev'])/(df['window_max_prev'] - df['window_min_prev'])
-    df['close_normalized_for_label'] = (df['close'] - df['window_min_prev'])/(df['window_max_prev'] - df['window_min_prev'])
-    df.drop(columns=['window_max', 'window_min', 'window_max_prev', 'window_min_prev'], inplace=True)
+    df.drop(columns=['window_max', 'window_min'], inplace=True)
     return df[window_size:]
 
 def normalize_by_window_v2(

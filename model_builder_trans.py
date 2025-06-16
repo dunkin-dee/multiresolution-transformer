@@ -1,6 +1,6 @@
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras.layers import Input, Dense, LayerNormalization, Dropout, Conv2D, MaxPooling2D, AveragePooling2D, Flatten, Concatenate, Reshape
+from tensorflow.keras.layers import Input, Dense, LayerNormalization, Dropout, Concatenate
 from tensorflow.keras.models import Model
 from tensorflow.keras import backend as K
 
@@ -283,8 +283,8 @@ def conservative_trading_loss(y_true, y_pred):
     """
     More conservative loss that heavily penalizes false buy signals
     """
-    focal = focal_loss(y_true, y_pred, alpha=0.75)  # Higher alpha for more focus on minority class
-    asymmetric = asymmetric_loss(y_true, y_pred, false_positive_cost=3.0)
+    focal = focal_loss(y_true, y_pred, alpha=0.9)  # Higher alpha for more focus on minority class
+    asymmetric = asymmetric_loss(y_true, y_pred, false_positive_cost=5.0)
     precision = smooth_precision_loss(y_true, y_pred)
     
     return 0.3 * focal + 0.4 * asymmetric + 0.3 * precision

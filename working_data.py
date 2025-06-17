@@ -24,7 +24,7 @@ def add_rsi(df):
 def add_timing(df):
     df['datetime'] = pd.to_datetime(df['time'], unit='s')
     df['hour_of_day'] = df['datetime'].dt.hour
-    df['position_in_hour'] = (df['datetime'].dt.minute // 55)
+    df['position_in_hour'] = (df['datetime'].dt.minute / 55)
     return df
 
 def add_hour_position(df):
@@ -367,7 +367,7 @@ def alt_label_df(df,
                 break
                 
             # Check if target is hit using high_normalized (more realistic)
-            if mini_row['high_normalized'] >= target_signal:
+            if mini_row['close_normalized'] >= target_signal:
                 target_hit = True
                 break
         
@@ -586,53 +586,173 @@ def split_df(
     test_data.to_csv(os.path.join(dump_path, 'test.csv'), index=False)
 
 
-def chunky_split_df(
-        df, 
-        dump_path, 
-        train_size=0.7,
-        chunk_size=1000,
-        lookback=30,
-        cols=[
-            'open_normalized',
-            'high_normalized',
-            'low_normalized',
-            'close_normalized',
-            'target'
-        ]):
-    # Select only desired columns
-    df = df[cols]
+def split_multiresolution_chunks(
+    df_5min, 
+    df_hour, 
+    dump_path, 
+    chunk_size=10000,
+    hour_lookback=30,  # other_tokens parameter from your prepare_data function
+    train_size=0.7,
+    lookback=30,  # 5-minute lookback for validation/test splits
+    cols=['time', 'open', 'high', 'low', 'close']
+):
+    """
+    Split 5-minute dataframe into chunks while preventing data leakage with hourly data.
     
-    # Initialize empty dataframes to collect the splits
-    super_train_df = pd.DataFrame(columns=cols)
-    super_val_df = pd.DataFrame(columns=cols)
-    super_test_df = pd.DataFrame(columns=cols)
+    Parameters:
+    -----------
+    df_5min : pd.DataFrame
+        Main 5-minute OHLC dataframe to be split
+    df_hour : pd.DataFrame  
+        Hourly OHLC dataframe used for reference to prevent data leakage
+    dump_path : str
+        Base path where chunk folders will be created
+    chunk_size : int
+        Maximum size of each chunk
+    hour_lookback : int
+        Number of hourly periods to look back (other_tokens from prepare_data)
+    train_size : float
+        Proportion of data for training (0.7 = 70%)
+    lookback : int
+        Lookback window for validation/test adjustments
+    cols : list
+        Columns to include in the output CSV files
     
-    # Process the dataframe in chunks
-    for start in range(0, len(df), chunk_size):
-        chunk = df.iloc[start:start+chunk_size]
-        
-        # Split chunk into training and temporary (val + test) sets
-        train_chunk, temp_chunk = train_test_split(chunk, test_size=1 - train_size, shuffle=False)
-        
-        # Split temporary set equally into validation and test sets
-        val_chunk, test_chunk = train_test_split(temp_chunk, test_size=0.5, shuffle=False)
-        
-        # Apply lookback slice to validation and test sets
-        if len(val_chunk) > lookback:
-            val_chunk = val_chunk.iloc[lookback:]
-        else:
-            val_chunk = pd.DataFrame(columns=cols)
-        if len(test_chunk) > lookback:
-            test_chunk = test_chunk.iloc[lookback:]
-        else:
-            test_chunk = pd.DataFrame(columns=cols)
-        
-        # Append the results to the super dataframes
-        super_train_df = pd.concat([super_train_df, train_chunk], ignore_index=True)
-        super_val_df = pd.concat([super_val_df, val_chunk], ignore_index=True)
-        super_test_df = pd.concat([super_test_df, test_chunk], ignore_index=True)
+    Returns:
+    --------
+    dict: Summary of chunks created
+    """
     
-    # Save the combined datasets to CSV files
-    super_train_df.to_csv(os.path.join(dump_path, 'train.csv'), index=False)
-    super_val_df.to_csv(os.path.join(dump_path, 'val.csv'), index=False)
-    super_test_df.to_csv(os.path.join(dump_path, 'test.csv'), index=False)
+    # Create base directories
+    os.makedirs(dump_path, exist_ok=True)
+    for split_type in ['training', 'validation', 'testing']:
+        os.makedirs(os.path.join(dump_path, split_type), exist_ok=True)
+    
+    # Filter columns
+    df_5min_filtered = df_5min[cols].copy()
+    df_hour_filtered = df_hour[['time']].copy()  # Only need time for reference
+    
+    # Sort both dataframes by time to ensure proper ordering
+    df_5min_filtered = df_5min_filtered.sort_values('time').reset_index(drop=True)
+    df_hour_filtered = df_hour_filtered.sort_values('time').reset_index(drop=True)
+    
+    # Convert time columns to numpy arrays for efficient searching
+    hour_times = df_hour_filtered['time'].values
+    min5_times = df_5min_filtered['time'].values
+    
+    total_rows = len(df_5min_filtered)
+    chunk_info = []
+    
+    # Calculate chunks
+    start_idx = 0
+    chunk_num = 0
+    
+    while start_idx < total_rows:
+        # Calculate end index for this chunk
+        end_idx = min(start_idx + chunk_size, total_rows)
+        
+        # Get the time range for this chunk
+        chunk_start_time = min5_times[start_idx]
+        chunk_end_time = min5_times[end_idx - 1]
+        
+        # Find the corresponding hour index for the chunk start time
+        # Use searchsorted to find where chunk_start_time would fit in hour_times
+        hour_start_pos = np.searchsorted(hour_times, chunk_start_time, side='right') - 1
+        
+        # Calculate how much 5-minute data we need to discard from the start
+        # to ensure no bleeding with previous chunks when using hour_lookback
+        if chunk_num > 0:  # Skip adjustment for first chunk
+            # We need to ensure that when we look back hour_lookback periods
+            # from any point in this chunk, we don't access data from previous chunks
+            
+            # Find the earliest hour time that would be accessed by hour_lookback
+            earliest_hour_idx = max(0, hour_start_pos - hour_lookback + 1)
+            earliest_hour_time = hour_times[earliest_hour_idx]
+            
+            # Find the first 5-minute index that is >= earliest_hour_time
+            safe_start_idx = np.searchsorted(min5_times[start_idx:end_idx], 
+                                           earliest_hour_time, side='left') + start_idx
+            
+            # Adjust start_idx to ensure safety margin
+            start_idx = max(start_idx, safe_start_idx)
+            
+            # Recalculate end_idx if start_idx changed
+            end_idx = min(start_idx + chunk_size, total_rows)
+        
+        # Skip if chunk is too small after adjustments
+        if end_idx - start_idx < lookback * 3:  # Need minimum data for train/val/test
+            print(f"Skipping chunk {chunk_num}: too small after safety adjustments")
+            break
+            
+        # Extract chunk data
+        chunk_data = df_5min_filtered.iloc[start_idx:end_idx].copy().reset_index(drop=True)
+        
+        # Split chunk into train/val/test
+        train_data, temp_data = train_test_split(
+            chunk_data, 
+            test_size=1-train_size, 
+            shuffle=False
+        )
+        
+        val_data, test_data = train_test_split(
+            temp_data, 
+            test_size=0.50, 
+            shuffle=False
+        )
+        
+        # Apply lookback adjustments to val and test data
+        val_data = val_data.iloc[lookback:].reset_index(drop=True)
+        test_data = test_data.iloc[lookback:].reset_index(drop=True)
+        
+        # Save chunks to CSV files
+        chunk_folder_name = f'chunk_{chunk_num:03d}'
+        
+        # Save training data
+        train_path = os.path.join(dump_path, 'training', f'{chunk_folder_name}_train.csv')
+        train_data.to_csv(train_path, index=False)
+        
+        # Save validation data (if not empty)
+        if len(val_data) > 0:
+            val_path = os.path.join(dump_path, 'validation', f'{chunk_folder_name}_val.csv')
+            val_data.to_csv(val_path, index=False)
+        
+        # Save test data (if not empty)
+        if len(test_data) > 0:
+            test_path = os.path.join(dump_path, 'testing', f'{chunk_folder_name}_test.csv')
+            test_data.to_csv(test_path, index=False)
+        
+        # Store chunk information
+        chunk_info.append({
+            'chunk_num': chunk_num,
+            'start_idx': start_idx,
+            'end_idx': end_idx,
+            'total_rows': end_idx - start_idx,
+            'train_rows': len(train_data),
+            'val_rows': len(val_data),
+            'test_rows': len(test_data),
+            'start_time': chunk_start_time,
+            'end_time': min5_times[end_idx - 1],
+            'hour_start_pos': hour_start_pos
+        })
+        
+        print(f"Chunk {chunk_num}: {start_idx}-{end_idx} "
+              f"(train: {len(train_data)}, val: {len(val_data)}, test: {len(test_data)})")
+        
+        # Move to next chunk
+        start_idx = end_idx
+        chunk_num += 1
+    
+    # Create summary
+    summary = {
+        'total_chunks': len(chunk_info),
+        'total_original_rows': total_rows,
+        'chunks_info': chunk_info,
+        'dump_path': dump_path
+    }
+    
+    print(f"\nCreated {len(chunk_info)} chunks in {dump_path}")
+    print(f"Total training files: {len([c for c in chunk_info if c['train_rows'] > 0])}")
+    print(f"Total validation files: {len([c for c in chunk_info if c['val_rows'] > 0])}")
+    print(f"Total testing files: {len([c for c in chunk_info if c['test_rows'] > 0])}")
+    
+    return summary

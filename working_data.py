@@ -734,10 +734,7 @@ def split_multiresolution_chunks(
             'end_time': min5_times[end_idx - 1],
             'hour_start_pos': hour_start_pos
         })
-        
-        print(f"Chunk {chunk_num}: {start_idx}-{end_idx} "
-              f"(train: {len(train_data)}, val: {len(val_data)}, test: {len(test_data)})")
-        
+
         # Move to next chunk
         start_idx = end_idx
         chunk_num += 1
@@ -749,10 +746,5 @@ def split_multiresolution_chunks(
         'chunks_info': chunk_info,
         'dump_path': dump_path
     }
-    
-    print(f"\nCreated {len(chunk_info)} chunks in {dump_path}")
-    print(f"Total training files: {len([c for c in chunk_info if c['train_rows'] > 0])}")
-    print(f"Total validation files: {len([c for c in chunk_info if c['val_rows'] > 0])}")
-    print(f"Total testing files: {len([c for c in chunk_info if c['test_rows'] > 0])}")
     
     return summary

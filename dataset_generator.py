@@ -283,7 +283,6 @@ class MultiResolutionDataGenerator:
                     tf.convert_to_tensor(batch_targets[:batch_idx], dtype=tf.int32)
                 )
             
-            logger.info(f"Completed epoch: {samples_processed} samples processed")
             break  # Remove for infinite epochs
     
     def _extract_sample(self, chunk_idx: int, row_idx: int) -> Optional[Tuple[np.ndarray, np.ndarray, int]]:
@@ -362,7 +361,7 @@ def create_chunked_dataset_generator(config: DatasetConfig, repeat_dataset: bool
     if repeat_dataset:
         dataset = dataset.repeat()
     
-    return dataset
+    return dataset, generator.get_total_training_samples()
 
 def get_dataset_sample_count(config: DatasetConfig) -> int:
     """
@@ -400,9 +399,6 @@ if __name__ == "__main__":
             config=config,
             repeat_dataset=True
         )
-        
-        # Use in training
-        # model.fit(train_dataset, epochs=10, steps_per_epoch=100)
         
     except Exception as e:
         logger.error(f"Failed to create dataset: {e}")

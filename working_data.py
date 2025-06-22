@@ -16,6 +16,144 @@ def clean_non_minute_rows(df):
         return df
     return df[cut_off:]
 
+def clean_five_minute_data(df):
+    """
+    Clean OHLC data to keep only entries that follow 5-minute intervals.
+    
+    Args:
+        df: DataFrame with 'time' column containing Unix timestamps
+        
+    Returns:
+        DataFrame with only 5-minute interval entries
+    """
+    # Convert time to datetime for easier analysis
+    df['datetime'] = pd.to_datetime(df['time'], unit='s')
+    
+    # Sort by time to ensure proper order
+    df = df.sort_values('time').reset_index(drop=True)
+    
+    # Calculate time differences between consecutive entries (in seconds)
+    df['time_diff'] = df['time'].diff()
+    
+    # 5 minutes = 300 seconds
+    five_minutes = 300
+    
+    # Find the first entry that starts a consistent 5-minute pattern
+    start_idx = None
+    
+    # Look for at least 3 consecutive 5-minute intervals to confirm the pattern
+    for i in range(1, len(df) - 2):
+        if (df.loc[i, 'time_diff'] == five_minutes and 
+            df.loc[i+1, 'time_diff'] == five_minutes and 
+            df.loc[i+2, 'time_diff'] == five_minutes):
+            start_idx = i
+            break
+    
+    if start_idx is None:
+        # If no clear 5-minute pattern found, try a more flexible approach
+        # Find the most common time difference that's close to 300 seconds
+        time_diffs = df['time_diff'].dropna()
+        # Filter for differences between 250-350 seconds (allowing some tolerance)
+        valid_diffs = time_diffs[(time_diffs >= 250) & (time_diffs <= 350)]
+        
+        if len(valid_diffs) > 0:
+            # Use the most common interval as our target
+            target_interval = valid_diffs.mode().iloc[0] if len(valid_diffs.mode()) > 0 else five_minutes
+            
+            # Find first occurrence of this interval
+            for i, diff in enumerate(time_diffs):
+                if abs(diff - target_interval) <= 50:  # 50 second tolerance
+                    start_idx = i + 1  # +1 because diff() shifts indices
+                    break
+    
+    if start_idx is None:
+        print("Warning: Could not find a clear 5-minute pattern. Returning original data.")
+        return df.drop(['datetime', 'time_diff'], axis=1)
+    
+    # Keep only data from the start of the 5-minute pattern
+    cleaned_df = df.iloc[start_idx:].copy()
+    
+    # Optional: Further filter to keep only entries with proper 5-minute intervals
+    # This removes any outliers within the main data
+    cleaned_df['time_diff_clean'] = cleaned_df['time'].diff()
+    
+    # Keep first row and rows with proper 5-minute intervals (with some tolerance)
+    mask = (cleaned_df['time_diff_clean'].isna()) | (abs(cleaned_df['time_diff_clean'] - five_minutes) <= 60)
+    cleaned_df = cleaned_df[mask]
+    
+    # Clean up temporary columns
+    cleaned_df = cleaned_df.drop(['datetime', 'time_diff', 'time_diff_clean'], axis=1)
+    
+    return cleaned_df.reset_index(drop=True)
+
+def clean_hour_data(df):
+    """
+    Clean OHLC data to keep only entries that follow hour intervals.
+    
+    Args:
+        df: DataFrame with 'time' column containing Unix timestamps
+        
+    Returns:
+        DataFrame with only hour interval entries
+    """
+    # Convert time to datetime for easier analysis
+    df['datetime'] = pd.to_datetime(df['time'], unit='s')
+    
+    # Sort by time to ensure proper order
+    df = df.sort_values('time').reset_index(drop=True)
+    
+    # Calculate time differences between consecutive entries (in seconds)
+    df['time_diff'] = df['time'].diff()
+    
+    hour = 3600
+    
+    # Find the first entry that starts a consistent 5-minute pattern
+    start_idx = None
+    
+    # Look for at least 3 consecutive hour intervals to confirm the pattern
+    for i in range(1, len(df) - 2):
+        if (df.loc[i, 'time_diff'] == hour and 
+            df.loc[i+1, 'time_diff'] == hour and 
+            df.loc[i+2, 'time_diff'] == hour):
+            start_idx = i
+            break
+    
+    if start_idx is None:
+        # If no clear hour pattern found, try a more flexible approach
+        # Find the most common time difference that's close to 300 seconds
+        time_diffs = df['time_diff'].dropna()
+        # Filter for differences between 250-350 seconds (allowing some tolerance)
+        valid_diffs = time_diffs[(time_diffs >= 3500) & (time_diffs <= 3700)]
+        
+        if len(valid_diffs) > 0:
+            # Use the most common interval as our target
+            target_interval = valid_diffs.mode().iloc[0] if len(valid_diffs.mode()) > 0 else hour
+            
+            # Find first occurrence of this interval
+            for i, diff in enumerate(time_diffs):
+                if abs(diff - target_interval) <= 50:  # 50 second tolerance
+                    start_idx = i + 1  # +1 because diff() shifts indices
+                    break
+    
+    if start_idx is None:
+        print("Warning: Could not find a clear hour pattern. Returning original data.")
+        return df.drop(['datetime', 'time_diff'], axis=1)
+    
+    cleaned_df = df.iloc[start_idx:].copy()
+    
+    # Optional: Further filter to keep only entries with proper hour intervals
+    # This removes any outliers within the main data
+    cleaned_df['time_diff_clean'] = cleaned_df['time'].diff()
+    
+    # Keep first row and rows with proper hour intervals (with some tolerance)
+    mask = (cleaned_df['time_diff_clean'].isna()) | (abs(cleaned_df['time_diff_clean'] - hour) <= 60)
+    cleaned_df = cleaned_df[mask]
+    
+    # Clean up temporary columns
+    cleaned_df = cleaned_df.drop(['datetime', 'time_diff', 'time_diff_clean'], axis=1)
+    
+    return cleaned_df.reset_index(drop=True)
+
 def add_rsi(df):
     df['rsi'] = talib.RSI(df['close'], timeperiod=14)
     df['rsi'] = df['rsi']/100

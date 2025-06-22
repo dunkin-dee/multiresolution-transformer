@@ -190,7 +190,7 @@ class StochasticGatedTransformerBlock(tf.keras.layers.Layer):
         return input_shape
     
 class WarmupCosineDecay(tf.keras.optimizers.schedules.LearningRateSchedule):
-    def __init__(self, initial_lr=1e-3, warmup_steps=1000, decay_steps=10000):
+    def __init__(self, initial_lr=5e-5, warmup_steps=90000, decay_steps=900000):
         super(WarmupCosineDecay, self).__init__()
         self.initial_lr = initial_lr
         self.warmup_steps = warmup_steps

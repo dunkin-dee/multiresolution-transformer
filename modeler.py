@@ -32,7 +32,7 @@ def create_model(input_shape=(64, 4), other_input_shape=(64, 4),
     # Process 5-minute data branch
     x = cnn_feature_extractor(input_layer, '5min', d_model-16)
     x = Dense(d_model - 16, name='5min_projection')(x)  # Reserve 16 dims for type embedding
-    x = LearnablePositionalEncoding(maxlen=num_tokens, d_model=d_model - 16)(x)
+    x = LearnablePositionalEncoding(max_seq_len=num_tokens, embed_dim=d_model - 16)(x)
     
     # Add type embedding for 5-minute data (type 0)
     x = AddTypeEmbedding(type_id=0, embed_dim=16, name='5min_type_embed')(x)
@@ -40,7 +40,7 @@ def create_model(input_shape=(64, 4), other_input_shape=(64, 4),
     # Process hourly data branch
     h = cnn_feature_extractor(other_input_layer, 'hourly', d_model-16)
     h = Dense(d_model - 16, name='hourly_projection')(h)  # Reserve 16 dims for type embedding
-    h = LearnablePositionalEncoding(maxlen=other_tokens, d_model=d_model-16)(h)
+    h = LearnablePositionalEncoding(max_seq_len=other_tokens, embed_dim=d_model-16)(h)
     
     # Add type embedding for hourly data (type 1)
     h = AddTypeEmbedding(type_id=1, embed_dim=16, name='hourly_type_embed')(h)

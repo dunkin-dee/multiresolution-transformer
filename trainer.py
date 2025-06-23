@@ -8,6 +8,7 @@ from losses import recommended_trading_loss
 from datasets import get_datasets_and_steps
 from transformer_builder import WarmupCosineDecay
 from modeler import create_model
+from constants.global_constants import LR, WARMUP, DECAY
 
 class TimeBasedTrainingManager:
     """Manages training time windows to ensure stopping before 9 PM"""
@@ -45,6 +46,11 @@ class TimeBasedTrainingManager:
         self.training_start_time = current_time
         print(f"Training session started at: {self.training_start_time.strftime('%H:%M:%S')}")
         return True
+        
+    def load_epoch_durations(self, epoch_durations):
+        """Load previous epoch durations from saved state"""
+        self.epoch_durations = epoch_durations
+        print(f"Loaded {len(self.epoch_durations)} previous epoch durations for estimation")
         
     def can_start_epoch(self):
         """Check if we can safely start another epoch"""
@@ -128,7 +134,8 @@ class TrainingStateManager:
         self.history_path = os.path.join(checkpoint_dir, 'training_history.json')
         
     def save_training_state(self, model, optimizer, epoch, best_val_loss, 
-                          early_stopping_patience_count, global_step, history=None):
+                          early_stopping_patience_count, global_step, history=None,
+                          epoch_durations=None):
         """Save complete training state"""
         print(f"Saving training state at epoch {epoch}, global step {global_step}...")
         
@@ -136,22 +143,38 @@ class TrainingStateManager:
         model.save(self.model_path)
         print(f"Model saved to {self.model_path}")
         
-        # Save optimizer state (weights and momentum)
+        # Save optimizer state (configuration and iteration count)
         optimizer_state = {
             'config': optimizer.get_config(),
-            'weights': optimizer.get_weights() if len(optimizer.get_weights()) > 0 else None,
-            'global_step': int(global_step)  # Save the global step for LR schedule
+            'global_step': int(global_step),  # Save the global step for LR schedule
+            'learning_rate': float(optimizer.learning_rate.numpy()) if hasattr(optimizer.learning_rate, 'numpy') else float(optimizer.learning_rate),
+            'iterations': int(optimizer.iterations.numpy()) if hasattr(optimizer.iterations, 'numpy') else int(optimizer.iterations)
         }
+        
+        # Try to get variable values for momentum etc. (this is the proper way in newer TF versions)
+        try:
+            # Get optimizer variables (includes momentum, etc.)
+            optimizer_variables = {}
+            for var in optimizer.variables:
+                if hasattr(var, 'name') and hasattr(var, 'numpy'):
+                    optimizer_variables[var.name] = var.numpy().tolist()
+            optimizer_state['variables'] = optimizer_variables
+            print(f"Saved {len(optimizer_variables)} optimizer variables")
+        except Exception as e:
+            print(f"Warning: Could not save optimizer variables: {e}")
+            optimizer_state['variables'] = {}
+        
         with open(self.optimizer_path, 'wb') as f:
             pickle.dump(optimizer_state, f)
         print(f"Optimizer state saved to {self.optimizer_path}")
         
-        # Save training metadata
+        # Save training metadata including epoch durations
         training_state = {
             'current_epoch': epoch,
             'global_step': int(global_step),  # Critical for LR schedule continuity
             'best_val_loss': float(best_val_loss),
             'early_stopping_patience_count': early_stopping_patience_count,
+            'epoch_durations': epoch_durations or [],  # Save epoch durations for time estimation
             'timestamp': datetime.now().isoformat()
         }
         with open(self.training_state_path, 'w') as f:
@@ -167,7 +190,7 @@ class TrainingStateManager:
     def load_training_state(self):
         """Load complete training state"""
         if not os.path.exists(self.training_state_path):
-            return None, None, 0, 0, float('inf'), 0, {}
+            return None, None, 0, 0, float('inf'), 0, {}, []
         
         print("Loading previous training state...")
         
@@ -176,18 +199,38 @@ class TrainingStateManager:
             training_state = json.load(f)
         
         current_epoch = training_state['current_epoch']
-        global_step = training_state.get('global_step', 0)  # Global step for LR schedule
+        global_step = training_state.get('global_step', 0)
         best_val_loss = training_state['best_val_loss']
         early_stopping_patience_count = training_state['early_stopping_patience_count']
+        epoch_durations = training_state.get('epoch_durations', [])
         
         print(f"Resuming from epoch {current_epoch}, global step {global_step}, best_val_loss: {best_val_loss}")
+        print(f"Loaded {len(epoch_durations)} previous epoch durations")
         
-        # Load model
+        # Load model with ALL custom objects
         model = None
         if os.path.exists(self.model_path):
+            # Import all custom components
+            from transformer_builder import (
+                LearnablePositionalEncoding, 
+                StochasticGatedTransformerBlock, 
+                AddTypeEmbedding, 
+                AttentionPooling,
+                WarmupCosineDecay  # Add this if it's also custom
+            )
+            
+            custom_objects = {
+                'recommended_trading_loss': recommended_trading_loss,
+                'LearnablePositionalEncoding': LearnablePositionalEncoding,
+                'StochasticGatedTransformerBlock': StochasticGatedTransformerBlock,
+                'AddTypeEmbedding': AddTypeEmbedding,
+                'AttentionPooling': AttentionPooling,
+                'WarmupCosineDecay': WarmupCosineDecay
+            }
+            
             model = tf.keras.models.load_model(
                 self.model_path, 
-                custom_objects={'recommended_trading_loss': recommended_trading_loss}
+                custom_objects=custom_objects
             )
             print(f"Model loaded from {self.model_path}")
         
@@ -205,7 +248,7 @@ class TrainingStateManager:
                 history = json.load(f)
             print(f"Training history loaded from {self.history_path}")
         
-        return model, optimizer_state, current_epoch, global_step, best_val_loss, early_stopping_patience_count, history
+        return model, optimizer_state, current_epoch, global_step, best_val_loss, early_stopping_patience_count, history, epoch_durations
     
     def save_best_model(self, model):
         """Save the best model separately"""
@@ -219,7 +262,7 @@ class TrainingStateManager:
 class ResumableTrainingCallback(Callback):
     """Custom callback to handle state saving, best model tracking, and time management"""
     
-    def __init__(self, state_manager, time_manager, save_freq=1):
+    def __init__(self, state_manager, time_manager, save_freq=1, initial_epoch=0):
         super().__init__()
         self.state_manager = state_manager
         self.time_manager = time_manager
@@ -229,6 +272,7 @@ class ResumableTrainingCallback(Callback):
         self.early_stopping_patience = 10
         self.global_step = 0  # Track global steps for LR schedule
         self.epoch_start_time = None
+        self.initial_epoch = initial_epoch  # Track the starting epoch for proper numbering
         
     def set_initial_state(self, best_val_loss, patience_count, global_step=0):
         """Set initial state when resuming"""
@@ -241,12 +285,15 @@ class ResumableTrainingCallback(Callback):
         """Check if we can safely start this epoch"""
         self.epoch_start_time = datetime.now()
         
+        # Adjust epoch number for display (epoch is 0-based within current session)
+        actual_epoch = epoch + self.initial_epoch + 1
+        
         if not self.time_manager.can_start_epoch():
-            print(f"Time cutoff reached. Stopping training before epoch {epoch + 1}")
+            print(f"Time cutoff reached. Stopping training before epoch {actual_epoch}")
             self.model.stop_training = True
             return
             
-        print(f"Starting epoch {epoch + 1} at {self.epoch_start_time.strftime('%H:%M:%S')}")
+        print(f"Starting epoch {actual_epoch} at {self.epoch_start_time.strftime('%H:%M:%S')}")
     
     def on_batch_end(self, batch, logs=None):
         """Update global step counter after each batch"""
@@ -256,11 +303,14 @@ class ResumableTrainingCallback(Callback):
         logs = logs or {}
         current_val_loss = logs.get('val_loss', float('inf'))
         
+        # Adjust epoch number for display and saving
+        actual_epoch = epoch + self.initial_epoch + 1
+        
         # Record epoch duration for time estimation
         if self.epoch_start_time:
             epoch_duration = (datetime.now() - self.epoch_start_time).total_seconds()
             self.time_manager.record_epoch_duration(epoch_duration)
-            print(f"Epoch {epoch + 1} completed in {epoch_duration/3600:.2f} hours")
+            print(f"Epoch {actual_epoch} completed in {epoch_duration/3600:.2f} hours")
         
         # Check if this is the best model
         if current_val_loss < self.best_val_loss:
@@ -284,11 +334,12 @@ class ResumableTrainingCallback(Callback):
             self.state_manager.save_training_state(
                 model=self.model,
                 optimizer=self.model.optimizer,
-                epoch=epoch + 1,
+                epoch=actual_epoch,  # Save actual epoch number
                 best_val_loss=self.best_val_loss,
                 early_stopping_patience_count=self.early_stopping_patience_count,
                 global_step=self.global_step,
-                history=history_dict
+                history=history_dict,
+                epoch_durations=self.time_manager.epoch_durations  # Save epoch durations
             )
         
         # Check early stopping
@@ -300,25 +351,35 @@ class ResumableTrainingCallback(Callback):
         print(self.time_manager.get_training_summary())
 
 def restore_optimizer_state(optimizer, optimizer_state, model, global_step):
-    """Restore optimizer state including momentum"""
-    if optimizer_state and optimizer_state['weights'] is not None:
-        # Need to run one step to initialize optimizer variables
+    """Restore optimizer state including iteration count"""
+    if optimizer_state:
+        # Run one step to initialize optimizer variables
         dummy_gradients = [tf.zeros_like(var) for var in model.trainable_variables]
         optimizer.apply_gradients(zip(dummy_gradients, model.trainable_variables))
         
-        # Now set the saved weights (this includes the step counter and momentum)
-        try:
-            optimizer.set_weights(optimizer_state['weights'])
-            print(f"Optimizer weights restored successfully")
-        except Exception as e:
-            print(f"Warning: Could not restore optimizer weights: {e}")
-        
-        # Manually set the optimizer's iteration counter to maintain LR schedule
+        # Restore the iteration counter to maintain LR schedule
+        # This is CRITICAL - use the saved global_step, not iterations from optimizer_state
         if hasattr(optimizer, 'iterations'):
             optimizer.iterations.assign(global_step)
             print(f"Optimizer iteration counter set to: {global_step}")
         
+        # Try to restore optimizer variables (momentum, etc.)
+        if 'variables' in optimizer_state and optimizer_state['variables']:
+            try:
+                # Map saved variables back to optimizer variables
+                for opt_var in optimizer.variables:
+                    if hasattr(opt_var, 'name') and opt_var.name in optimizer_state['variables']:
+                        saved_value = optimizer_state['variables'][opt_var.name]
+                        opt_var.assign(tf.constant(saved_value, dtype=opt_var.dtype))
+                        print(f"Restored optimizer variable: {opt_var.name}")
+            except Exception as e:
+                print(f"Warning: Could not restore optimizer variables: {e}")
+        
         print(f"Optimizer state restored successfully with global step: {global_step}")
+        
+        # Verify the learning rate is correct after restoration
+        current_lr = optimizer.learning_rate.numpy() if hasattr(optimizer.learning_rate, 'numpy') else optimizer.learning_rate
+        print(f"Current learning rate after restoration: {current_lr:.2e}")
     else:
         print("No optimizer state to restore - starting fresh")
 
@@ -330,14 +391,14 @@ def create_fresh_training_setup():
     working_path = 'data/split_data'
     instruments = os.listdir(working_path)
     # For testing with single instrument - uncomment next line if needed
-    instruments = ['SILVER#']
+    # instruments = ['SILVER#']
     (train_dataset, val_dataset, test_dataset), (train_steps, val_steps, test_steps) = get_datasets_and_steps(instruments)
     
     # Create model
     model = create_model(training=True)
     
     # Create optimizer and learning rate schedule
-    lr_schedule = WarmupCosineDecay(initial_lr=2e-5, warmup_steps=600000, decay_steps=6000000)
+    lr_schedule = WarmupCosineDecay(initial_lr=LR, warmup_steps=WARMUP, decay_steps=DECAY)
     optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule, clipnorm=1.0)
     
     # Create metrics
@@ -357,8 +418,8 @@ def resume_training_setup(state_manager):
     """Resume training from checkpoint"""
     print("Resuming training from checkpoint...")
     
-    # Load training state
-    model, optimizer_state, current_epoch, global_step, best_val_loss, patience_count, history = state_manager.load_training_state()
+    # Load training state - now includes epoch_durations
+    model, optimizer_state, current_epoch, global_step, best_val_loss, patience_count, history, epoch_durations = state_manager.load_training_state()
     
     if model is None:
         raise ValueError("Could not load model from checkpoint")
@@ -371,7 +432,7 @@ def resume_training_setup(state_manager):
     (train_dataset, val_dataset, test_dataset), (train_steps, val_steps, test_steps) = get_datasets_and_steps(instruments)
     
     # Recreate optimizer with same configuration and global step for LR schedule
-    lr_schedule = WarmupCosineDecay(initial_lr=2e-5, warmup_steps=600000, decay_steps=6000000)
+    lr_schedule = WarmupCosineDecay(initial_lr=LR, warmup_steps=WARMUP, decay_steps=DECAY)
     optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule, clipnorm=1.0)
     
     # Recompile model (this creates new optimizer instance)
@@ -386,7 +447,7 @@ def resume_training_setup(state_manager):
     # Restore optimizer state with correct global step
     restore_optimizer_state(optimizer, optimizer_state, model, global_step)
     
-    return model, optimizer, train_dataset, val_dataset, train_steps, val_steps, current_epoch, best_val_loss, patience_count, global_step, history
+    return model, optimizer, train_dataset, val_dataset, train_steps, val_steps, current_epoch, best_val_loss, patience_count, global_step, history, epoch_durations
 
 def main():
     """Main training function with resumable capability and time management"""
@@ -395,7 +456,7 @@ def main():
     state_manager = TrainingStateManager()
     time_manager = TimeBasedTrainingManager(
         start_time_hour=7,   # 7 AM
-        end_time_hour=21,    # 9 PM
+        end_time_hour=22,    # 9 PM
         end_time_minute=0,
         buffer_minutes=30    # 30 minute safety buffer
     )
@@ -409,9 +470,11 @@ def main():
     if state_manager.has_checkpoint():
         try:
             model, optimizer, train_dataset, val_dataset, train_steps, val_steps, \
-            current_epoch, best_val_loss, patience_count, global_step, history = resume_training_setup(state_manager)
+            current_epoch, best_val_loss, patience_count, global_step, history, epoch_durations = resume_training_setup(state_manager)
             
             initial_epoch = current_epoch
+            # Load epoch durations into time manager for accurate time estimation
+            time_manager.load_epoch_durations(epoch_durations)
             print(f"Successfully resumed from checkpoint")
         except Exception as e:
             print(f"Failed to resume training: {e}")
@@ -443,11 +506,21 @@ def main():
     print(f"Current best validation loss: {best_val_loss:.6f}")
     print(f"Early stopping patience count: {patience_count}")
     print(f"Training window: 7 AM - 9 PM with 30-minute buffer")
+    
+    # Show current learning rate
+    current_lr = optimizer.learning_rate.numpy() if hasattr(optimizer.learning_rate, 'numpy') else optimizer.learning_rate
+    print(f"Current learning rate: {current_lr:.2e}")
+    
+    print(f"Previous epoch durations: {len(time_manager.epoch_durations)}")
+    if time_manager.epoch_durations:
+        avg_duration = sum(time_manager.epoch_durations) / len(time_manager.epoch_durations)
+        print(f"Average epoch duration: {avg_duration/3600:.2f} hours")
+    
     print(f"{'='*60}")
     model.summary()
     
     # Create resumable callback with time management
-    resumable_callback = ResumableTrainingCallback(state_manager, time_manager, save_freq=1)
+    resumable_callback = ResumableTrainingCallback(state_manager, time_manager, save_freq=1, initial_epoch=initial_epoch)
     resumable_callback.set_initial_state(best_val_loss, patience_count, global_step)
     
     # Train the model
@@ -476,14 +549,19 @@ def main():
         if hasattr(history, 'history'):
             final_history = {key: [float(v) for v in values] for key, values in history.history.items()}
         
+        # Calculate final epoch number correctly
+        epochs_completed = len(history.history.get('loss', [])) if hasattr(history, 'history') else 0
+        final_epoch = initial_epoch + epochs_completed
+        
         resumable_callback.state_manager.save_training_state(
             model=model,
             optimizer=model.optimizer,
-            epoch=initial_epoch + len(history.history.get('loss', [])) if hasattr(history, 'history') else initial_epoch,
+            epoch=final_epoch,
             best_val_loss=resumable_callback.best_val_loss,
             early_stopping_patience_count=resumable_callback.early_stopping_patience_count,
             global_step=resumable_callback.global_step,
-            history=final_history
+            history=final_history,
+            epoch_durations=time_manager.epoch_durations  # Save updated epoch durations
         )
     else:
         print("Training already completed!")

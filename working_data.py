@@ -201,51 +201,6 @@ def add_bollinger_bands(df):
     df['upper'], df['middle'], df['lower'] = talib.BBANDS(df['close'])
     return df
 
-# def normalize_by_window(
-#         df, 
-#         window_size=1440, 
-#         chunk_size=20, 
-#         normalizing_cols=[
-#             'open',
-#             'high',
-#             'low',
-#             'close']):
-#     col_numbers = range(1, window_size+1)
-#     col_split = [col_numbers[i:i + chunk_size] for i in range(0, len(col_numbers), chunk_size)]
-#     df['window_min'] = df['low']
-#     df['window_max'] = df['high']
-
-#     for col_range in col_split:
-#         high_cols = []
-#         low_cols = []
-        
-#         for x in col_range:
-#             high_col_name = f"high-{x}"
-#             df[high_col_name] = df['high'].shift(x)
-#             high_cols.append(high_col_name)
-#         high_cols_inclusive = high_cols + ['window_max']
-#         df['window_max'] = df[high_cols_inclusive].max(axis=1)
-#         df.drop(columns=high_cols, inplace=True)
-
-#         for x in col_range:
-#             low_col_name = f"low-{x}"
-#             df[low_col_name] = df['low'].shift(x)
-#             low_cols.append(low_col_name)
-#         low_cols_inclusive = low_cols + ['window_min']
-#         df['window_min'] = df[low_cols_inclusive].min(axis=1)
-#         df.drop(columns=low_cols, inplace=True)
-
-#     for normalizing_col in normalizing_cols:
-#         df[f"{normalizing_col}_normalized"] = (df[normalizing_col] - df['window_min'])/(df['window_max'] - df['window_min'])
-
-
-#     df['window_max_prev'] = df['window_max'].shift(1)
-#     df['window_min_prev'] = df['window_min'].shift(1)
-
-#     df['open_normalized_for_label'] = (df['open'] - df['window_min_prev'])/(df['window_max_prev'] - df['window_min_prev'])
-#     df['close_normalized_for_label'] = (df['close'] - df['window_min_prev'])/(df['window_max_prev'] - df['window_min_prev'])
-#     df.drop(columns=['window_max', 'window_min', 'window_max_prev', 'window_min_prev'], inplace=True)
-#     return df[window_size:]
 
 def normalize_by_window(
         df, 
@@ -381,45 +336,6 @@ def label_df(df, window_size=20, mean_multiplier=4, positive_slope=0.4, negative
     return df[1:-window_size]
 
 
-# def alt_label_df(df, 
-#                  window_size=60, 
-#                  mean_multiplier=4, 
-#                  positive_slope=0.4, 
-#                  negative_slope=0.8,
-#                  cur_candle_multiplier=2,
-#                  starting_hour=0,
-#                  ending_hour=24):
-#     df = df.reset_index(drop=True)  # Reset the index
-#     df['candle'] = df['close_normalized_for_label'] - df['open_normalized_for_label']
-#     df['target'] = 0
-#     df['include'] = 0
-#     mean_candle = df['candle'].abs().mean()
-#     acceptable_candle = mean_candle * cur_candle_multiplier
-
-#     for index in range(0, len(df) - window_size):
-#         row = df.iloc[index]
-#         if row['candle'] < acceptable_candle:
-#             continue
-#         if row['close_normalized'] > negative_slope or row['close_normalized'] < positive_slope:
-#             continue
-#         if row['hour_of_day'] < starting_hour or row['hour_of_day'] >= ending_hour:
-#             continue
-#         df.at[index, 'include'] = 1
-#         target_signal = row['close_normalized'] + mean_candle * mean_multiplier
-#         end_signal = row['close_normalized'] - (mean_candle * 1)
-#         cur_close = row['close_normalized']
-
-#         for mini_index in range(index + 1, index + window_size):
-#             mini_row = df.iloc[mini_index]
-#             if mini_row['close_normalized'] < end_signal:
-#                 break
-#             cur_close += mini_row['candle']
-#             if cur_close > target_signal: # or mini_row['close_normalized_for_label'] >= 1:
-#                 df.at[index, 'target'] = 1
-#                 break
-
-#     return df[:len(df) - window_size]
-
 
 def alt_label_df(df, 
                  window_size=60, 
@@ -516,54 +432,6 @@ def alt_label_df(df,
     df = df.drop(columns=['candle'])
     return df.iloc[:len(df) - window_size].copy()
 
-# def alt_label_df_raw(df, window_size=60, mean_multiplier=4, positive_slope=0.4, negative_slope=0.8, cur_candle_multiplier=2):
-#     """
-#     Label buying opportunities using raw price values instead of normalized values
-#     to avoid missing opportunities at the top of normalization curves.
-#     """
-#     df = df.reset_index(drop=True)
-    
-#     # Calculate raw candle size using actual OHLC values
-#     df['candle_raw'] = df['close'] - df['open']
-#     df['target'] = 0
-    
-#     # Use absolute candle size for mean calculation
-#     mean_candle_raw = df['candle_raw'].abs().mean()
-#     acceptable_candle_raw = mean_candle_raw * cur_candle_multiplier
-    
-#     for index in range(0, len(df) - window_size):
-#         row = df.iloc[index]
-        
-#         # Filter based on raw candle size
-#         if abs(row['candle_raw']) < acceptable_candle_raw:
-#             continue
-
-#         if row['close_normalized'] < positive_slope or row['close_normalized'] > negative_slope:
-#             continue
-            
-#         # Set target and end signals based on raw close price
-#         target_signal = row['close'] + (mean_candle_raw * mean_multiplier)
-#         end_signal = row['close'] - (mean_candle_raw * 1)
-        
-#         # Track cumulative price movement using raw values
-#         cur_close = row['close']
-        
-#         for mini_index in range(index + 1, index + window_size):
-#             mini_row = df.iloc[mini_index]
-            
-#             # Exit if price drops below end signal
-#             if mini_row['close'] < end_signal:
-#                 break
-                
-#             # Add raw candle movement to current price
-#             cur_close += mini_row['candle_raw']
-            
-#             # Check if target is reached using raw price
-#             if cur_close > target_signal:
-#                 df.at[index, 'target'] = 1
-#                 break
-    
-#     return df[:len(df) - window_size]
 
 def alt_label_df_raw(df, window_size=60, mean_multiplier=4, 
                      positive_slope=0.4, negative_slope=0.8,

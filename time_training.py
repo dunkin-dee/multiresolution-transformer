@@ -3,9 +3,9 @@ import os
 import tensorflow as tf
 import numpy as np
 from model_builder_trans import recommended_trading_loss
-from tensorflow.keras.models import save_model, load_model, Model
+from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Input, Conv1D,  Dense, concatenate, Dropout, Layer, GlobalAveragePooling1D, GlobalMaxPooling1D, LayerNormalization, Add, Embedding
-from global_constants import NUM_TOKENS, OTHER_TOKENS, BATCH_SIZE, LOOKBACK_WINDOW, NUM_HEADS, FF_DIM, D_MODEL
+from constants.global_constants import NUM_TOKENS, OTHER_TOKENS, BATCH_SIZE, LOOKBACK_WINDOW, NUM_HEADS, FF_DIM, D_MODEL
 from multi_instrument_data_generator import InstrumentConfig, MultiInstrumentDatasetConfig, create_multi_instrument_dataset
 from transformer_builder import LearnablePositionalEncoding, StochasticGatedTransformerBlock, WarmupCosineDecay
 from tensorflow.keras.callbacks import Callback, EarlyStopping, ModelCheckpoint

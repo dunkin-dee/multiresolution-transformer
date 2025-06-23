@@ -1,293 +1,524 @@
-import numpy as np
-import polars as pl
-import pandas as pd
 import tensorflow as tf
-import tensorflow as tf
-from tensorflow.keras.layers import Input, Conv1D, MaxPooling1D, Flatten, Dense, concatenate, LayerNormalization, Dropout, Lambda
-from tensorflow.keras.models import Model
-from tensorflow.keras.layers import MultiHeadAttention, Add, Embedding
-import matplotlib.pyplot as plt
-from sklearn.preprocessing import StandardScaler, MinMaxScaler
-from working_data import clean_cols, clean_non_minute_rows, alt_label_df as label_df, normalize_by_window, split_df
-from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
-from model_builder_trans import combined_loss
-from scipy.signal import savgol_filter
+import os
+import json
+import pickle
+from datetime import datetime, time
+from tensorflow.keras.callbacks import Callback
+from losses import recommended_trading_loss
+from datasets import get_datasets_and_steps
+from transformer_builder import WarmupCosineDecay
+from modeler import create_model
 
-NORMALIZING_WINDOW_SIZE = 60*24
-LABELING_WINDOW_SIZE = 20
-POSITIVE_SLOPE = 0.3
-LABEL_CUR_CANDLE_MULTIPLIER = 0
-LABEL_MEAN_MULTIPLIER = 6
-BATCH_SIZE = 32
-NUM_TOKENS = 128
-LOOKBACK_WINDOW = NUM_TOKENS + 1
-D_MODEL = 128
-FF_DIM = 256
-NUM_HEADS = D_MODEL//16
-
-source_csv = "data/GBPUSD/minutes.csv"
-working_path = "working"
-
-df = pd.read_csv(source_csv)
-df = clean_non_minute_rows(df)
-df = clean_cols(df)
-break_point = len(df) - len(df)//2
-# cols = ['open', 'high', 'low', 'close']
-# signal = np.array(df[cols])
-# signal = np.apply_along_axis(lambda x: savgol_filter(x, window_length=5, polyorder=4), axis=0, arr=signal)
-# df[cols] = signal
-df = df[break_point:]
-df = normalize_by_window(
-    df, 
-    window_size=NORMALIZING_WINDOW_SIZE, 
-    normalizing_cols=[
-        'open',
-        'high',
-        'low',
-        'close',
-    ])
-print("labeling")
-df = label_df(df, window_size=LABELING_WINDOW_SIZE, mean_multiplier=LABEL_MEAN_MULTIPLIER, cur_candle_multiplier=LABEL_CUR_CANDLE_MULTIPLIER)
-print(df['target'].value_counts())
-split_df(
-    df=df, 
-    dump_path=working_path, 
-    cols=[
-        'open',
-        'high',
-        'low',
-        'close',
-        'open_normalized',
-        'high_normalized',
-        'low_normalized',
-        'close_normalized',
-        'target'
-    ])
-
-
-def prepare_data(file_path, num_tokens, window_size=1440, batch_size=32, smote=False, shuffle=False, cols=['open', 'high', 'low', 'close']):
-    scaler = MinMaxScaler()
-    stand_scaler = StandardScaler()
-    emd_range = window_size
-    # Load CSV lazily with Polars
-    collect_cols = cols + ['target']
-    df_lazy = pl.scan_csv(file_path).select(collect_cols)
+class TimeBasedTrainingManager:
+    """Manages training time windows to ensure stopping before 9 PM"""
     
-    # Collect the dataframe and determine total number of rows
-    df_collected = df_lazy.collect()
-    total_rows = df_collected.shape[0]
-    if smote:
-        df_collected = df_collected.with_columns(pl.arange(0, total_rows).alias("index"))
-        indices_target_1 = df_collected.filter(
-            (pl.col("target") == 1) & (pl.col("index") >= emd_range)
-        ).select("index").to_series().to_list()
-
-        # Get indices where target is 0 and >= num_tokens
-        indices_target_0 = df_collected.filter(
-            (pl.col("target") == 0) & (pl.col("index") >= emd_range)
-        ).select("index").to_series().to_list()
-
-        df_collected = df_collected.drop('index')
-    
-    while True:  # Loop to reshuffle and restart at each epoch
-        # Create an array of indices to use for shuffling
-        indices = list(range(emd_range, total_rows))
-        if smote:
-            indices_target_1_complete = []
-            while len(indices_target_1_complete) < len(indices_target_0):
-                indices_target_1_complete += indices_target_1
-
-            indices_target_1_complete = indices_target_1_complete[:len(indices_target_0)]
-
-            indices = indices_target_0 + indices_target_1_complete
-
-        # Shuffle indices if required
-        if shuffle:
-            np.random.shuffle(indices)
-
-        input_list = []
-        target_list = []
-
-        for idx in indices:
-            #create imfs
-            signal = np.array(df_collected[cols][idx - emd_range + 1:idx + 1])
+    def __init__(self, start_time_hour=7, end_time_hour=21, end_time_minute=0, buffer_minutes=30):
+        """
+        Initialize time manager
+        
+        Args:
+            start_time_hour: Hour to allow training start (24-hour format, default 7 = 7 AM)
+            end_time_hour: Hour to stop training (24-hour format, default 21 = 9 PM)
+            end_time_minute: Minute to stop training (default 0)
+            buffer_minutes: Safety buffer before end time (default 30 minutes)
+        """
+        self.start_time = time(start_time_hour, 0)
+        self.end_time = time(end_time_hour, end_time_minute)
+        self.buffer_minutes = buffer_minutes
+        self.training_start_time = None
+        self.epoch_durations = []  # Track epoch durations for estimation
+        
+    def start_training_session(self):
+        """Mark the start of training session"""
+        current_time = datetime.now()
+        current_time_only = current_time.time()
+        
+        # Check if we're in valid training window
+        if current_time_only < self.start_time:
+            print(f"Too early to start training. Current: {current_time_only}, Earliest start: {self.start_time}")
+            return False
             
-            # signal = scaler.fit_transform(signal)
+        if current_time_only >= self.end_time:
+            print(f"Too late to start training. Current: {current_time_only}, Latest end: {self.end_time}")
+            return False
+            
+        self.training_start_time = current_time
+        print(f"Training session started at: {self.training_start_time.strftime('%H:%M:%S')}")
+        return True
+        
+    def can_start_epoch(self):
+        """Check if we can safely start another epoch"""
+        if not self.training_start_time:
+            return False
+            
+        current_time = datetime.now()
+        current_time_only = current_time.time()
+        
+        # Calculate time until cutoff (with buffer)
+        today = current_time.date()
+        cutoff_datetime = datetime.combine(today, self.end_time)
+        buffer_cutoff = cutoff_datetime.timestamp() - (self.buffer_minutes * 60)
+        buffer_cutoff_datetime = datetime.fromtimestamp(buffer_cutoff)
+        
+        # If it's already past buffer cutoff, don't start
+        if current_time >= buffer_cutoff_datetime:
+            print(f"Current time {current_time_only} is past buffer cutoff time (9 PM - {self.buffer_minutes} min buffer)")
+            return False
+            
+        # Estimate time needed for next epoch
+        estimated_epoch_duration = self.estimate_epoch_duration()
+        
+        # Check if we have enough time
+        time_remaining = (buffer_cutoff_datetime - current_time).total_seconds()
+        
+        if time_remaining < estimated_epoch_duration:
+            print(f"Insufficient time remaining. Need ~{estimated_epoch_duration/60:.1f} minutes, have {time_remaining/60:.1f} minutes")
+            return False
+            
+        print(f"Safe to start epoch. Estimated duration: {estimated_epoch_duration/60:.1f} minutes, Time remaining: {time_remaining/60:.1f} minutes")
+        return True
+        
+    def record_epoch_duration(self, duration_seconds):
+        """Record the duration of completed epoch for future estimation"""
+        self.epoch_durations.append(duration_seconds)
+        # Keep only last 3 epochs for moving average
+        if len(self.epoch_durations) > 3:
+            self.epoch_durations.pop(0)
+            
+    def estimate_epoch_duration(self):
+        """Estimate duration of next epoch based on historical data"""
+        if not self.epoch_durations:
+            # Conservative estimate: 7.5 hours = 27,000 seconds
+            return 27000
+        
+        # Use average of recent epochs with 15% safety margin
+        avg_duration = sum(self.epoch_durations) / len(self.epoch_durations)
+        return avg_duration * 1.15  # 15% safety margin
+        
+    def get_training_summary(self):
+        """Get summary of training time management"""
+        if not self.training_start_time:
+            return "Training not started"
+            
+        current_time = datetime.now()
+        total_training_time = (current_time - self.training_start_time).total_seconds()
+        
+        return f"""
+Training Time Summary:
+- Started: {self.training_start_time.strftime('%H:%M:%S')}
+- Current: {current_time.strftime('%H:%M:%S')}
+- Total training time: {total_training_time/3600:.1f} hours
+- Epochs completed: {len(self.epoch_durations)}
+- Average epoch duration: {sum(self.epoch_durations)/len(self.epoch_durations)/3600:.1f} hours (if any)
+- Training window: {self.start_time} - {self.end_time}
+"""
 
-            # Fetch the previous `num_prev + 1` rows for the input based on the current index
-            input_rows = signal[-num_tokens:]
-            target_value = df_collected[idx, -1]  # Get 'target' for the target
+class TrainingStateManager:
+    """Manages training state persistence and resumption"""
+    
+    def __init__(self, checkpoint_dir='checkpoints'):
+        self.checkpoint_dir = checkpoint_dir
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        
+        # File paths for different state components
+        self.model_path = os.path.join(checkpoint_dir, 'current_model.keras')
+        self.best_model_path = os.path.join(checkpoint_dir, 'best_model.keras')
+        self.optimizer_path = os.path.join(checkpoint_dir, 'optimizer_state.pkl')
+        self.training_state_path = os.path.join(checkpoint_dir, 'training_state.json')
+        self.history_path = os.path.join(checkpoint_dir, 'training_history.json')
+        
+    def save_training_state(self, model, optimizer, epoch, best_val_loss, 
+                          early_stopping_patience_count, global_step, history=None):
+        """Save complete training state"""
+        print(f"Saving training state at epoch {epoch}, global step {global_step}...")
+        
+        # Save current model
+        model.save(self.model_path)
+        print(f"Model saved to {self.model_path}")
+        
+        # Save optimizer state (weights and momentum)
+        optimizer_state = {
+            'config': optimizer.get_config(),
+            'weights': optimizer.get_weights() if len(optimizer.get_weights()) > 0 else None,
+            'global_step': int(global_step)  # Save the global step for LR schedule
+        }
+        with open(self.optimizer_path, 'wb') as f:
+            pickle.dump(optimizer_state, f)
+        print(f"Optimizer state saved to {self.optimizer_path}")
+        
+        # Save training metadata
+        training_state = {
+            'current_epoch': epoch,
+            'global_step': int(global_step),  # Critical for LR schedule continuity
+            'best_val_loss': float(best_val_loss),
+            'early_stopping_patience_count': early_stopping_patience_count,
+            'timestamp': datetime.now().isoformat()
+        }
+        with open(self.training_state_path, 'w') as f:
+            json.dump(training_state, f, indent=2)
+        print(f"Training state saved to {self.training_state_path}")
+        
+        # Save training history if provided
+        if history:
+            with open(self.history_path, 'w') as f:
+                json.dump(history, f, indent=2)
+            print(f"Training history saved to {self.history_path}")
+    
+    def load_training_state(self):
+        """Load complete training state"""
+        if not os.path.exists(self.training_state_path):
+            return None, None, 0, 0, float('inf'), 0, {}
+        
+        print("Loading previous training state...")
+        
+        # Load training metadata
+        with open(self.training_state_path, 'r') as f:
+            training_state = json.load(f)
+        
+        current_epoch = training_state['current_epoch']
+        global_step = training_state.get('global_step', 0)  # Global step for LR schedule
+        best_val_loss = training_state['best_val_loss']
+        early_stopping_patience_count = training_state['early_stopping_patience_count']
+        
+        print(f"Resuming from epoch {current_epoch}, global step {global_step}, best_val_loss: {best_val_loss}")
+        
+        # Load model
+        model = None
+        if os.path.exists(self.model_path):
+            model = tf.keras.models.load_model(
+                self.model_path, 
+                custom_objects={'recommended_trading_loss': recommended_trading_loss}
+            )
+            print(f"Model loaded from {self.model_path}")
+        
+        # Load optimizer state
+        optimizer_state = None
+        if os.path.exists(self.optimizer_path):
+            with open(self.optimizer_path, 'rb') as f:
+                optimizer_state = pickle.load(f)
+            print(f"Optimizer state loaded from {self.optimizer_path}")
+        
+        # Load training history
+        history = {}
+        if os.path.exists(self.history_path):
+            with open(self.history_path, 'r') as f:
+                history = json.load(f)
+            print(f"Training history loaded from {self.history_path}")
+        
+        return model, optimizer_state, current_epoch, global_step, best_val_loss, early_stopping_patience_count, history
+    
+    def save_best_model(self, model):
+        """Save the best model separately"""
+        model.save(self.best_model_path)
+        print(f"Best model saved to {self.best_model_path}")
+    
+    def has_checkpoint(self):
+        """Check if checkpoint exists"""
+        return os.path.exists(self.training_state_path)
 
-            # Append the input rows to the input list
-            input_list.append(input_rows)
-            target_list.append(target_value)
+class ResumableTrainingCallback(Callback):
+    """Custom callback to handle state saving, best model tracking, and time management"""
+    
+    def __init__(self, state_manager, time_manager, save_freq=1):
+        super().__init__()
+        self.state_manager = state_manager
+        self.time_manager = time_manager
+        self.save_freq = save_freq  # Save every N epochs
+        self.best_val_loss = float('inf')
+        self.early_stopping_patience_count = 0
+        self.early_stopping_patience = 10
+        self.global_step = 0  # Track global steps for LR schedule
+        self.epoch_start_time = None
+        
+    def set_initial_state(self, best_val_loss, patience_count, global_step=0):
+        """Set initial state when resuming"""
+        self.best_val_loss = best_val_loss
+        self.early_stopping_patience_count = patience_count
+        self.global_step = global_step
+        print(f"Initial state set - Best val loss: {best_val_loss}, Patience: {patience_count}, Global step: {global_step}")
+    
+    def on_epoch_begin(self, epoch, logs=None):
+        """Check if we can safely start this epoch"""
+        self.epoch_start_time = datetime.now()
+        
+        if not self.time_manager.can_start_epoch():
+            print(f"Time cutoff reached. Stopping training before epoch {epoch + 1}")
+            self.model.stop_training = True
+            return
+            
+        print(f"Starting epoch {epoch + 1} at {self.epoch_start_time.strftime('%H:%M:%S')}")
+    
+    def on_batch_end(self, batch, logs=None):
+        """Update global step counter after each batch"""
+        self.global_step += 1
+    
+    def on_epoch_end(self, epoch, logs=None):
+        logs = logs or {}
+        current_val_loss = logs.get('val_loss', float('inf'))
+        
+        # Record epoch duration for time estimation
+        if self.epoch_start_time:
+            epoch_duration = (datetime.now() - self.epoch_start_time).total_seconds()
+            self.time_manager.record_epoch_duration(epoch_duration)
+            print(f"Epoch {epoch + 1} completed in {epoch_duration/3600:.2f} hours")
+        
+        # Check if this is the best model
+        if current_val_loss < self.best_val_loss:
+            self.best_val_loss = current_val_loss
+            self.early_stopping_patience_count = 0
+            # Save best model
+            self.state_manager.save_best_model(self.model)
+            print(f"New best model! Val loss: {current_val_loss:.6f}")
+        else:
+            self.early_stopping_patience_count += 1
+            print(f"No improvement. Patience count: {self.early_stopping_patience_count}/{self.early_stopping_patience}")
+        
+        # Save training state periodically
+        if (epoch + 1) % self.save_freq == 0:
+            # Prepare history for saving
+            history_dict = {}
+            if hasattr(self.model, 'history') and hasattr(self.model.history, 'history'):
+                for key, values in self.model.history.history.items():
+                    history_dict[key] = [float(v) for v in values]
+            
+            self.state_manager.save_training_state(
+                model=self.model,
+                optimizer=self.model.optimizer,
+                epoch=epoch + 1,
+                best_val_loss=self.best_val_loss,
+                early_stopping_patience_count=self.early_stopping_patience_count,
+                global_step=self.global_step,
+                history=history_dict
+            )
+        
+        # Check early stopping
+        if self.early_stopping_patience_count >= self.early_stopping_patience:
+            print(f"Early stopping triggered after {self.early_stopping_patience} epochs without improvement")
+            self.model.stop_training = True
+            
+        # Print time summary
+        print(self.time_manager.get_training_summary())
 
-            # Yield once we have enough for a batch
-            if len(input_list) == batch_size:
-                # Convert lists to NumPy arrays
-                input_array = np.array(input_list)
-                target_array = np.array(target_list)
+def restore_optimizer_state(optimizer, optimizer_state, model, global_step):
+    """Restore optimizer state including momentum"""
+    if optimizer_state and optimizer_state['weights'] is not None:
+        # Need to run one step to initialize optimizer variables
+        dummy_gradients = [tf.zeros_like(var) for var in model.trainable_variables]
+        optimizer.apply_gradients(zip(dummy_gradients, model.trainable_variables))
+        
+        # Now set the saved weights (this includes the step counter and momentum)
+        try:
+            optimizer.set_weights(optimizer_state['weights'])
+            print(f"Optimizer weights restored successfully")
+        except Exception as e:
+            print(f"Warning: Could not restore optimizer weights: {e}")
+        
+        # Manually set the optimizer's iteration counter to maintain LR schedule
+        if hasattr(optimizer, 'iterations'):
+            optimizer.iterations.assign(global_step)
+            print(f"Optimizer iteration counter set to: {global_step}")
+        
+        print(f"Optimizer state restored successfully with global step: {global_step}")
+    else:
+        print("No optimizer state to restore - starting fresh")
 
-                # Convert NumPy arrays to TensorFlow tensors
-                input_tensor = tf.convert_to_tensor(input_array, dtype=tf.float32)
-                target_tensor = tf.convert_to_tensor(target_array, dtype=tf.int32)
-
-                yield input_tensor, target_tensor
-
-                # Reset lists for the next batch
-
-                input_list.clear()
-                target_list.clear()
-
-        break
-
-def create_dataset_generator(file_path, batch_size, num_tokens, window_size=LOOKBACK_WINDOW, shuffle=False, repeat=False, smote=False, cols=['open', 'high', 'low', 'close']):
-    dataset = tf.data.Dataset.from_generator(
-        lambda: prepare_data(file_path, window_size=window_size, batch_size=batch_size, num_tokens=num_tokens, shuffle=shuffle, smote=smote, cols=cols),
-        output_signature=(
-            tf.TensorSpec(shape=(None, num_tokens, len(cols)), dtype=tf.float32),
-            tf.TensorSpec(shape=(None,), dtype=tf.int32)
-        )
+def create_fresh_training_setup():
+    """Create fresh training setup"""
+    print("Starting fresh training...")
+    
+    # Load datasets
+    working_path = 'data/split_data'
+    instruments = os.listdir(working_path)
+    # For testing with single instrument - uncomment next line if needed
+    instruments = ['SILVER#']
+    (train_dataset, val_dataset, test_dataset), (train_steps, val_steps, test_steps) = get_datasets_and_steps(instruments)
+    
+    # Create model
+    model = create_model(training=True)
+    
+    # Create optimizer and learning rate schedule
+    lr_schedule = WarmupCosineDecay(initial_lr=2e-5, warmup_steps=600000, decay_steps=6000000)
+    optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule, clipnorm=1.0)
+    
+    # Create metrics
+    auc = tf.keras.metrics.AUC()
+    prec = tf.keras.metrics.Precision()
+    
+    # Compile model
+    model.compile(
+        optimizer=optimizer,
+        loss=recommended_trading_loss,
+        metrics=['accuracy', auc, prec]
     )
-    if repeat:
-        dataset = dataset.repeat()
-    return dataset 
+    
+    return model, optimizer, train_dataset, val_dataset, train_steps, val_steps
 
-def get_total_rows(file_path, num_tokens, smote=False):
-    # Count the total number of rows in the CSV file
-    df_lazy = pl.scan_csv(file_path)
-    df_collected = df_lazy.collect()
-    total_rows = df_collected.shape[0]
-    if not smote:
-        return total_rows
-    df_collected = df_collected.with_columns(pl.arange(0, total_rows).alias("index"))
-    indices_target_0 = df_collected.filter(
-            (pl.col("target") == 0) & (pl.col("index") >= num_tokens)
+def resume_training_setup(state_manager):
+    """Resume training from checkpoint"""
+    print("Resuming training from checkpoint...")
+    
+    # Load training state
+    model, optimizer_state, current_epoch, global_step, best_val_loss, patience_count, history = state_manager.load_training_state()
+    
+    if model is None:
+        raise ValueError("Could not load model from checkpoint")
+    
+    # Recreate datasets (make sure they're the same as original training)
+    working_path = 'data/split_data'
+    instruments = os.listdir(working_path)
+    # For testing with single instrument - make sure this matches your original setup
+    # instruments = ['SILVER#']
+    (train_dataset, val_dataset, test_dataset), (train_steps, val_steps, test_steps) = get_datasets_and_steps(instruments)
+    
+    # Recreate optimizer with same configuration and global step for LR schedule
+    lr_schedule = WarmupCosineDecay(initial_lr=2e-5, warmup_steps=600000, decay_steps=6000000)
+    optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule, clipnorm=1.0)
+    
+    # Recompile model (this creates new optimizer instance)
+    auc = tf.keras.metrics.AUC()
+    prec = tf.keras.metrics.Precision()
+    model.compile(
+        optimizer=optimizer,
+        loss=recommended_trading_loss,
+        metrics=['accuracy', auc, prec]
     )
-    return len(indices_target_0) * 2
+    
+    # Restore optimizer state with correct global step
+    restore_optimizer_state(optimizer, optimizer_state, model, global_step)
+    
+    return model, optimizer, train_dataset, val_dataset, train_steps, val_steps, current_epoch, best_val_loss, patience_count, global_step, history
 
-train_path = 'working/train.csv'
-val_path = 'working/val.csv'
-test_path = 'working/test.csv'
-
-cols = [
-    'open_normalized',
-    'high_normalized',
-    'low_normalized',
-    'close_normalized'
-]
-
-train_dataset = create_dataset_generator(train_path, batch_size=BATCH_SIZE, num_tokens=NUM_TOKENS, repeat=True, shuffle=True, smote=True, cols=cols)
-val_dataset = create_dataset_generator(val_path, batch_size=BATCH_SIZE, num_tokens=NUM_TOKENS, repeat=True, cols=cols)
-test_dataset = create_dataset_generator(test_path, batch_size=BATCH_SIZE, num_tokens=NUM_TOKENS, cols=cols)
-
-train_steps = get_total_rows(train_path, num_tokens=LOOKBACK_WINDOW, smote=True)//BATCH_SIZE
-val_steps = get_total_rows(val_path, num_tokens=LOOKBACK_WINDOW)//BATCH_SIZE
-test_steps = get_total_rows(test_path, num_tokens=LOOKBACK_WINDOW)//BATCH_SIZE
-
-
-input_length = NUM_TOKENS 
-
-class PositionalEncoding(tf.keras.layers.Layer):
-    def __init__(self, maxlen, d_model):
-        super(PositionalEncoding, self).__init__()
-        self.pos_encoding = self.positional_encoding(maxlen, d_model)
-
-    def positional_encoding(self, maxlen, d_model):
-        positions = np.arange(maxlen)[:, np.newaxis]
-        angles = np.arange(d_model)[np.newaxis, :]
-        angle_rates = 1 / np.power(10000, (2 * (angles // 2)) / np.float32(d_model))
-        angle_rads = positions * angle_rates
-
-        angle_rads[:, 0::2] = np.sin(angle_rads[:, 0::2])
-        angle_rads[:, 1::2] = np.cos(angle_rads[:, 1::2])
-
-        return tf.cast(angle_rads[np.newaxis, ...], dtype=tf.float32)
-
-    def call(self, inputs):
-        return inputs + self.pos_encoding[:, :tf.shape(inputs)[1], :]
-
-
-class TransformerBlock(tf.keras.layers.Layer):
-    def __init__(self, embed_dim, num_heads, ff_dim, rate=0.1):
-        super(TransformerBlock, self).__init__()
-        self.att = tf.keras.layers.MultiHeadAttention(num_heads=num_heads, key_dim=embed_dim)
-        self.ffn = tf.keras.Sequential(
-            [Dense(ff_dim, activation="relu"), Dense(embed_dim)]
+def main():
+    """Main training function with resumable capability and time management"""
+    
+    # Initialize managers
+    state_manager = TrainingStateManager()
+    time_manager = TimeBasedTrainingManager(
+        start_time_hour=7,   # 7 AM
+        end_time_hour=21,    # 9 PM
+        end_time_minute=0,
+        buffer_minutes=30    # 30 minute safety buffer
+    )
+    
+    # Check if we can start training at all today
+    if not time_manager.start_training_session():
+        print("Cannot start training - outside of allowed training window (7 AM - 9 PM)")
+        return None
+    
+    # Check if we should resume or start fresh
+    if state_manager.has_checkpoint():
+        try:
+            model, optimizer, train_dataset, val_dataset, train_steps, val_steps, \
+            current_epoch, best_val_loss, patience_count, global_step, history = resume_training_setup(state_manager)
+            
+            initial_epoch = current_epoch
+            print(f"Successfully resumed from checkpoint")
+        except Exception as e:
+            print(f"Failed to resume training: {e}")
+            print("Starting fresh training instead...")
+            model, optimizer, train_dataset, val_dataset, train_steps, val_steps = create_fresh_training_setup()
+            initial_epoch = 0
+            best_val_loss = float('inf')
+            patience_count = 0
+            global_step = 0
+    else:
+        model, optimizer, train_dataset, val_dataset, train_steps, val_steps = create_fresh_training_setup()
+        initial_epoch = 0
+        best_val_loss = float('inf')
+        patience_count = 0
+        global_step = 0
+    
+    # Check if we can even start an epoch today
+    if not time_manager.can_start_epoch():
+        print("Cannot start any epochs today - insufficient time remaining")
+        print("The training state has been saved. Please run again tomorrow between 7 AM and 9 PM")
+        return model  # Return current model
+    
+    # Print current training status
+    print(f"\n{'='*60}")
+    print(f"TRAINING STATUS")
+    print(f"{'='*60}")
+    print(f"Starting from epoch: {initial_epoch}")
+    print(f"Global step (for LR schedule): {global_step}")
+    print(f"Current best validation loss: {best_val_loss:.6f}")
+    print(f"Early stopping patience count: {patience_count}")
+    print(f"Training window: 7 AM - 9 PM with 30-minute buffer")
+    print(f"{'='*60}")
+    model.summary()
+    
+    # Create resumable callback with time management
+    resumable_callback = ResumableTrainingCallback(state_manager, time_manager, save_freq=1)
+    resumable_callback.set_initial_state(best_val_loss, patience_count, global_step)
+    
+    # Train the model
+    total_epochs = 50
+    remaining_epochs = total_epochs - initial_epoch
+    
+    if remaining_epochs > 0:
+        print(f"\nStarting training for up to {remaining_epochs} more epochs...")
+        print(f"Training will automatically stop before 9 PM with 30-minute buffer")
+        
+        history = model.fit(
+            train_dataset,
+            epochs=total_epochs,
+            initial_epoch=initial_epoch,
+            steps_per_epoch=train_steps,
+            validation_data=val_dataset,
+            validation_steps=val_steps,
+            callbacks=[resumable_callback],
+            verbose=1
         )
-        self.layernorm1 = LayerNormalization(epsilon=1e-6)
-        self.layernorm2 = LayerNormalization(epsilon=1e-6)
-        self.dropout1 = Dropout(rate)
-        self.dropout2 = Dropout(rate)
+        
+        print("Training session completed!")
+        
+        # Final save
+        final_history = {}
+        if hasattr(history, 'history'):
+            final_history = {key: [float(v) for v in values] for key, values in history.history.items()}
+        
+        resumable_callback.state_manager.save_training_state(
+            model=model,
+            optimizer=model.optimizer,
+            epoch=initial_epoch + len(history.history.get('loss', [])) if hasattr(history, 'history') else initial_epoch,
+            best_val_loss=resumable_callback.best_val_loss,
+            early_stopping_patience_count=resumable_callback.early_stopping_patience_count,
+            global_step=resumable_callback.global_step,
+            history=final_history
+        )
+    else:
+        print("Training already completed!")
+    
+    # Load and return the best model for inference
+    if os.path.exists(state_manager.best_model_path):
+        best_model = tf.keras.models.load_model(
+            state_manager.best_model_path,
+            custom_objects={'recommended_trading_loss': recommended_trading_loss}
+        )
+        print(f"Best model loaded from {state_manager.best_model_path}")
+        return best_model
+    else:
+        print("No best model found, returning current model")
+        return model
 
-    def call(self, inputs, training):
-        attn_output = self.att(inputs, inputs)
-        attn_output = self.dropout1(attn_output, training=training)
-        out1 = self.layernorm1(inputs + attn_output)
-        ffn_output = self.ffn(out1)
-        ffn_output = self.dropout2(ffn_output, training=training)
-        return self.layernorm2(out1 + ffn_output)
-
-auc =  tf.keras.metrics.AUC()
-auc.reset_state()
-prec = tf.keras.metrics.Precision()
-prec.reset_state()
-
-input_shape = (NUM_TOKENS, 4)
-
-input_layer = Input(shape=input_shape)
-x = Conv1D(filters=D_MODEL//2, kernel_size=3, activation='relu', padding="same")(input_layer)
-x = Conv1D(filters=D_MODEL, kernel_size=3, activation='relu', padding="same")(x)
-x = MaxPooling1D(pool_size=2, padding="same")(x)
-x = Dropout(0.1)(x)
-x = PositionalEncoding(x.shape[1], d_model=D_MODEL)(x)
-x = TransformerBlock(D_MODEL, NUM_HEADS, FF_DIM)(x, training=True)
-x = TransformerBlock(D_MODEL, NUM_HEADS, FF_DIM)(x, training=True)
-x = TransformerBlock(D_MODEL, NUM_HEADS, FF_DIM)(x, training=True)
-x = TransformerBlock(D_MODEL, NUM_HEADS, FF_DIM)(x, training=True)
-x = tf.keras.layers.GlobalAveragePooling1D()(x)
-outputs = Dense(1, activation='sigmoid')(x)
-model = Model(inputs=input_layer, outputs=outputs)
-
-model.load_weights("best_cnn_trans_model.keras", skip_mismatch=True)
-
-learning_rate = 1e-3  # Adjust this value as needed
-optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
-
-
-# Compile the model
-model.compile(
-    optimizer=optimizer, 
-    loss=combined_loss, 
-    metrics=['accuracy',auc, prec])
-
-model.summary()
-
-early_stopping = EarlyStopping(monitor='val_precision_1', 
-                               patience=10, # Stops if there's no improvement in precision for 5 epochs
-                               mode='max', 
-                               verbose=1)
-
-model_checkpoint = ModelCheckpoint('best_cnn_trans_model.keras', 
-                                   monitor='val_precision_1', 
-                                   save_best_only=True, 
-                                   mode='max', 
-                                   verbose=1)
-
-# model.load_weights('best_cnn_trans_model.keras')
-
-# Train the model using the train and validation datasets
-history = model.fit(
-    train_dataset,
-    epochs=50,
-    steps_per_epoch = train_steps,
-    validation_data=val_dataset,
-    validation_steps=val_steps,
-    callbacks=[early_stopping, model_checkpoint]
-)
-
-
-# Load the best model after training
-model.load_weights('best_cnn_trans_model.keras')
-
-
+if __name__ == "__main__":
+    # Run the training
+    print("Starting resumable training pipeline...")
+    final_model = main()
+    
+    if final_model is not None:
+        # Create inference model
+        print("Creating inference model...")
+        inference_model = create_model(training=False)
+        inference_model.set_weights(final_model.get_weights())
+        
+        print("\n" + "="*60)
+        print("TRAINING PIPELINE COMPLETED SUCCESSFULLY!")
+        print("="*60)
+        print("Models available:")
+        print("- Best model: checkpoints/best_model.keras")
+        print("- Current model: checkpoints/current_model.keras")
+        print("- Training can be resumed by running this script again")
+        print("="*60)
+    else:
+        print("Training could not be started due to time constraints.")
+        print("Please run again during training hours (7 AM - 9 PM).")

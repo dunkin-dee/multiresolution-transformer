@@ -15,3 +15,4 @@ FF_DIM = D_MODEL * 4
 NUM_HEADS = D_MODEL//24
 DRAWDOWN = 0.5
 LABEL_LOOKBACK = 768
+FEATURES = ['open_normalized', 'high_normalized', 'low_normalized', 'close_normalized']

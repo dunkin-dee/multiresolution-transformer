@@ -1,6 +1,6 @@
 import tensorflow as tf
 import numpy as np
-from tensorflow.keras.layers import  LayerNormalization, Dropout
+from tensorflow.keras.layers import  LayerNormalization, Dropout, Layer, Embedding, Dense
 
 class PositionalEncoding(tf.keras.layers.Layer):
     def __init__(self, maxlen, d_model):
@@ -189,6 +189,49 @@ class StochasticGatedTransformerBlock(tf.keras.layers.Layer):
     def compute_output_shape(self, input_shape):
         return input_shape
     
+
+class AddTypeEmbedding(Layer):
+    def __init__(self, type_id, embed_dim=16, **kwargs):
+        super().__init__(**kwargs)
+        self.type_id = type_id
+        self.embed_dim = embed_dim
+        self.embedding_layer = None
+        
+    def build(self, input_shape):
+        self.embedding_layer = Embedding(input_dim=2, output_dim=self.embed_dim, name=f'{self.name}_embed')
+        super().build(input_shape)
+        
+    def call(self, inputs):
+        batch_size = tf.shape(inputs)[0]
+        seq_len = tf.shape(inputs)[1]
+        type_ids = tf.fill((batch_size, seq_len), self.type_id)
+        type_embed = self.embedding_layer(type_ids)
+        return tf.concat([inputs, type_embed], axis=-1)
+        
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "type_id": self.type_id,
+            "embed_dim": self.embed_dim
+        })
+        return config
+
+
+class AttentionPooling(Layer):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.attention_dense = Dense(1)  # Remove activation here
+        
+    def call(self, inputs):
+        # inputs shape: (batch_size, seq_len, hidden_dim)
+        attention_logits = self.attention_dense(inputs)  # (batch_size, seq_len, 1)
+        attention_weights = tf.nn.softmax(attention_logits, axis=1)  # Softmax across sequence
+        return tf.reduce_sum(inputs * attention_weights, axis=1)
+        
+    def get_config(self):
+        config = super().get_config()
+        return config
+
 class WarmupCosineDecay(tf.keras.optimizers.schedules.LearningRateSchedule):
     def __init__(self, initial_lr=5e-5, warmup_steps=90000, decay_steps=900000):
         super(WarmupCosineDecay, self).__init__()

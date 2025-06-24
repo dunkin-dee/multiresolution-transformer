@@ -131,7 +131,8 @@ class StochasticGatedTransformerBlock(tf.keras.layers.Layer):
             # Apply noise during training
             def apply_training_noise():
                 noise_scale = 0.01
-                input_noise = tf.random.normal(tf.shape(inputs), stddev=noise_scale)
+                # Fix: Match the dtype of the input tensor
+                input_noise = tf.random.normal(tf.shape(inputs), stddev=noise_scale, dtype=inputs.dtype)
                 return inputs + input_noise
                 
             inputs_with_noise = tf.cond(
@@ -152,7 +153,8 @@ class StochasticGatedTransformerBlock(tf.keras.layers.Layer):
             
             # Add multiplicative noise to gates during training
             def add_gate_noise():
-                gate_noise = tf.random.normal(tf.shape(gate_val), mean=1.0, stddev=0.1)
+                # Fix: Match the dtype of the gate values
+                gate_noise = tf.random.normal(tf.shape(gate_val), mean=1.0, stddev=0.1, dtype=gate_val.dtype)
                 return gate_val * gate_noise
                 
             gate_val = tf.cond(
@@ -173,11 +175,12 @@ class StochasticGatedTransformerBlock(tf.keras.layers.Layer):
             # Apply stochastic feature dropout during training
             def apply_feature_dropout():
                 # Randomly zero out some features
+                # Fix: Match the dtype of the FFN output
                 feature_mask = tf.cast(
                     tf.random.uniform(tf.shape(ffn_output)) > 0.1, 
                     dtype=ffn_output.dtype
                 )
-                return ffn_output * feature_mask * 1.1  # Scale to maintain expected value
+                return ffn_output * feature_mask * tf.cast(1.1, dtype=ffn_output.dtype)  # Scale to maintain expected value
                 
             ffn_output = tf.cond(
                 tf.cast(training, tf.bool),
@@ -190,7 +193,8 @@ class StochasticGatedTransformerBlock(tf.keras.layers.Layer):
             
             # Add noise to FFN gates during training
             def add_ffn_gate_noise():
-                gate_noise = tf.random.normal(tf.shape(gate_val), mean=1.0, stddev=0.1)
+                # Fix: Match the dtype of the gate values
+                gate_noise = tf.random.normal(tf.shape(gate_val), mean=1.0, stddev=0.1, dtype=gate_val.dtype)
                 return gate_val * gate_noise
                 
             gate_val = tf.cond(
@@ -208,7 +212,7 @@ class StochasticGatedTransformerBlock(tf.keras.layers.Layer):
             return self.layernorm2(out1 + ffn_output)
         
         # Use tf.cond for the main block execution decision
-        random_value = tf.random.uniform([])
+        random_value = tf.random.uniform([], dtype=tf.float32)  # Keep this as float32 for comparison
         skip_condition = tf.logical_and(
             tf.cast(training, tf.bool),
             tf.less(random_value, tf.constant(self.stochastic_depth_rate))

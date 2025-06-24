@@ -95,7 +95,7 @@ class TimeBasedTrainingManager:
         """Estimate duration of next epoch based on historical data"""
         if not self.epoch_durations:
             # Conservative estimate: 7.5 hours = 27,000 seconds
-            return 27000
+            return 6
         
         # Use average of recent epochs with 15% safety margin
         avg_duration = sum(self.epoch_durations) / len(self.epoch_durations)
@@ -400,6 +400,7 @@ def create_fresh_training_setup():
     # Create optimizer and learning rate schedule
     lr_schedule = WarmupCosineDecay(initial_lr=LR, warmup_steps=WARMUP, decay_steps=DECAY)
     optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule, clipnorm=1.0)
+    optimizer = tf.keras.mixed_precision.LossScaleOptimizer(optimizer)
     
     # Create metrics
     auc = tf.keras.metrics.AUC()
@@ -434,6 +435,7 @@ def resume_training_setup(state_manager):
     # Recreate optimizer with same configuration and global step for LR schedule
     lr_schedule = WarmupCosineDecay(initial_lr=LR, warmup_steps=WARMUP, decay_steps=DECAY)
     optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule, clipnorm=1.0)
+    optimizer = tf.keras.mixed_precision.LossScaleOptimizer(optimizer)
     
     # Recompile model (this creates new optimizer instance)
     auc = tf.keras.metrics.AUC()
@@ -456,9 +458,9 @@ def main():
     state_manager = TrainingStateManager()
     time_manager = TimeBasedTrainingManager(
         start_time_hour=7,   # 7 AM
-        end_time_hour=22,    # 9 PM
-        end_time_minute=0,
-        buffer_minutes=30    # 30 minute safety buffer
+        end_time_hour=0,    # 9 PM
+        end_time_minute=23,
+        buffer_minutes=5    # 30 minute safety buffer
     )
     
     # Check if we can start training at all today
@@ -579,6 +581,19 @@ def main():
         return model
 
 if __name__ == "__main__":
+    # Instead of auto_mixed_precision, use explicit policy
+    try:
+        policy = tf.keras.mixed_precision.Policy('mixed_float16')
+        tf.keras.mixed_precision.set_global_policy(policy)
+        print(f"Mixed precision policy set: {policy.name}")
+        
+        # Verify it's working
+        print(f"Compute dtype: {policy.compute_dtype}")  # Should be float16
+        print(f"Variable dtype: {policy.variable_dtype}")  # Should be float32
+    except Exception as e:
+        print(f"Could not enable mixed precision: {e}")
+    
+    
     # Run the training
     print("Starting resumable training pipeline...")
     final_model = main()

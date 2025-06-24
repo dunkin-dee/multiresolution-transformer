@@ -5,5 +5,7 @@ recent_data/
 __pycache__/
 data/
 binary_attempt.ipynb
+checkpoints/
 *.h5
 *.csv
+*.keras

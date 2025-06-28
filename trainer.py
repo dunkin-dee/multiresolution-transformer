@@ -288,6 +288,18 @@ class ResumableTrainingCallback(Callback):
         # Adjust epoch number for display (epoch is 0-based within current session)
         actual_epoch = epoch + self.initial_epoch + 1
         
+        # Get current learning rate and log it
+        current_lr = self.model.optimizer.learning_rate
+        if hasattr(current_lr, 'numpy'):
+            lr_value = current_lr.numpy()
+        elif hasattr(current_lr, '__call__'):
+            # For custom LR schedules, call with current step
+            lr_value = current_lr(self.global_step).numpy()
+        else:
+            lr_value = float(current_lr)
+        
+        print(f"Epoch {actual_epoch} - Learning Rate: {lr_value:.2e} (Global Step: {self.global_step})")
+        
         if not self.time_manager.can_start_epoch():
             print(f"Time cutoff reached. Stopping training before epoch {actual_epoch}")
             self.model.stop_training = True
@@ -378,10 +390,19 @@ def restore_optimizer_state(optimizer, optimizer_state, model, global_step):
         print(f"Optimizer state restored successfully with global step: {global_step}")
         
         # Verify the learning rate is correct after restoration
-        current_lr = optimizer.learning_rate.numpy() if hasattr(optimizer.learning_rate, 'numpy') else optimizer.learning_rate
-        print(f"Current learning rate after restoration: {current_lr:.2e}")
+        current_lr = optimizer.learning_rate
+        if hasattr(current_lr, 'numpy'):
+            lr_value = current_lr.numpy()
+        elif hasattr(current_lr, '__call__'):
+            # For custom LR schedules, call with current step
+            lr_value = current_lr(global_step).numpy()
+        else:
+            lr_value = float(current_lr)
+        
+        print(f"Current learning rate after restoration: {lr_value:.2e}")
     else:
         print("No optimizer state to restore - starting fresh")
+
 
 def create_fresh_training_setup():
     """Create fresh training setup"""
@@ -458,8 +479,8 @@ def main():
     state_manager = TrainingStateManager()
     time_manager = TimeBasedTrainingManager(
         start_time_hour=7,   # 7 AM
-        end_time_hour=0,    # 9 PM
-        end_time_minute=23,
+        end_time_hour=23,    # 9 PM
+        end_time_minute=0,
         buffer_minutes=5    # 30 minute safety buffer
     )
     

@@ -5,8 +5,8 @@ from working_data import clean_five_minute_data, add_timing, normalize_by_window
 from constants.global_constants import *
 
 
-starting_dir = "data/final_data"
-working_path = "data/split_data"
+starting_dir = "data/finer_data"
+working_path = "data/split_finer_data"
 instruments = os.listdir(starting_dir)
 
 for instrument in instruments:
@@ -66,7 +66,7 @@ for instrument in instruments:
     split_multiresolution_chunks(df_5min=df,
                                 df_hour=hour_df,
                                 dump_path=f"{working_path}/{instrument}",
-                                chunk_size=60000,
+                                chunk_size=20000,
                                 hour_lookback=OTHER_TOKENS,
                                 lookback=NUM_TOKENS,
                                 cols=[

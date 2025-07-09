@@ -19,3 +19,6 @@ FEATURES = ['open_normalized', 'high_normalized', 'low_normalized', 'close_norma
 LR = 4e-5
 WARMUP = 800000
 DECAY = 400000 * 40
+FTLR = 2e-5
+FTWARMUP = 3000*5
+FTDECAY = 3000*40

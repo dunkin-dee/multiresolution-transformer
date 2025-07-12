@@ -4,7 +4,7 @@ import json
 import pickle
 from datetime import datetime, time
 from tensorflow.keras.callbacks import Callback
-from losses import recommended_trading_loss
+from losses import precision_focused_balanced_loss
 from datasets import get_datasets_and_steps
 from transformer_builder import WarmupCosineDecay
 from modeler import create_model
@@ -220,7 +220,7 @@ class TrainingStateManager:
             )
             
             custom_objects = {
-                'recommended_trading_loss': recommended_trading_loss,
+                'precision_focused_balanced_loss': precision_focused_balanced_loss,
                 'LearnablePositionalEncoding': LearnablePositionalEncoding,
                 'StochasticGatedTransformerBlock': StochasticGatedTransformerBlock,
                 'AddTypeEmbedding': AddTypeEmbedding,
@@ -426,12 +426,13 @@ def create_fresh_training_setup():
     # Create metrics
     auc = tf.keras.metrics.AUC()
     prec = tf.keras.metrics.Precision()
+    recall = tf.keras.metrics.Recall()
     
     # Compile model
     model.compile(
         optimizer=optimizer,
-        loss=recommended_trading_loss,
-        metrics=['accuracy', auc, prec]
+        loss=precision_focused_balanced_loss,
+        metrics=['accuracy', auc, prec, recall]
     )
     
     return model, optimizer, train_dataset, val_dataset, train_steps, val_steps
@@ -461,10 +462,11 @@ def resume_training_setup(state_manager):
     # Recompile model (this creates new optimizer instance)
     auc = tf.keras.metrics.AUC()
     prec = tf.keras.metrics.Precision()
+    recall = tf.keras.metrics.Recall()
     model.compile(
         optimizer=optimizer,
-        loss=recommended_trading_loss,
-        metrics=['accuracy', auc, prec]
+        loss=precision_focused_balanced_loss,
+        metrics=['accuracy', auc, prec, recall]
     )
     
     # Restore optimizer state with correct global step
@@ -593,7 +595,7 @@ def main():
     if os.path.exists(state_manager.best_model_path):
         best_model = tf.keras.models.load_model(
             state_manager.best_model_path,
-            custom_objects={'recommended_trading_loss': recommended_trading_loss}
+            custom_objects={'precision_focused_balanced_loss': precision_focused_balanced_loss}
         )
         print(f"Best model loaded from {state_manager.best_model_path}")
         return best_model

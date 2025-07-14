@@ -210,8 +210,8 @@ def precision_focused_balanced_loss(y_true, y_pred):
     """
     return trading_precision_recall_loss(y_true, y_pred,
                                        focal_weight=0.2,
-                                       precision_weight=0.4,
-                                       recall_weight=0.3,
+                                       precision_weight=0.6,
+                                       recall_weight=0.1,
                                        ranking_weight=0.1)
 
 def recall_boosted_loss(y_true, y_pred):

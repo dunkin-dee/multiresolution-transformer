@@ -26,10 +26,10 @@ class RecentDataTrainingPipeline:
         # Initialize managers
         self.recent_training_manager = TrainingStateManager('checkpoints_recent')
         self.time_manager = TimeBasedTrainingManager(
-            start_time_hour=7,
+            start_time_hour=0,
             end_time_hour=23,
-            end_time_minute=0,
-            buffer_minutes=5
+            end_time_minute=59,
+            buffer_minutes=0.1
         )
     
     def load_base_model(self):
@@ -72,14 +72,14 @@ class RecentDataTrainingPipeline:
         print("Base model loaded successfully")
         return model
     
-    def setup_model_for_training(self, base_model, learning_rate_factor=0.5):
+    def setup_model_for_training(self, base_model, learning_rate_factor=0.05):
         """Setup model for continued training with reduced learning rate"""
         # Create new optimizer with reduced learning rate for fine-tuning
         reduced_lr = LR * learning_rate_factor
         lr_schedule = WarmupCosineDecay(
             initial_lr=reduced_lr, 
-            warmup_steps=WARMUP // 20,  # Shorter warmup for fine-tuning
-            decay_steps=DECAY // 20     # Shorter decay for fine-tuning
+            warmup_steps=WARMUP // 5,  # Shorter warmup for fine-tuning
+            decay_steps=DECAY // 5     # Shorter decay for fine-tuning
         )
         
         optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule, clipnorm=1.0)

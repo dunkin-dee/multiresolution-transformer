@@ -1,7 +1,7 @@
 # =============================================================================
 # INSTRUMENT CONFIGURATION - CHANGE THIS TO TRAIN ON DIFFERENT INSTRUMENTS
 # =============================================================================
-TARGET_INSTRUMENT = 'EURUSD#'  # Change this to: 'EURUSD#', 'GBPUSD#', 'USDJPY#', 'AUDUSD#'
+TARGET_INSTRUMENT = 'GBPUSD#'  # Change this to: 'EURUSD#', 'GBPUSD#', 'USDJPY#', 'AUDUSD#'
 # =============================================================================
 
 import tensorflow as tf
@@ -18,7 +18,7 @@ from trainer import (
 from datasets import get_datasets_and_steps
 from transformer_builder import WarmupCosineDecay
 from modeler import create_model
-from losses import precision_focused_balanced_loss
+from losses import recommended_trading_loss
 from constants.global_constants import LR, WARMUP, DECAY
 
 
@@ -57,13 +57,13 @@ class InstrumentFineTuningPipeline:
         
         # Import both loss functions for loading
         try:
-            from losses import recommended_trading_loss
+            from losses import precision_focused_balanced_loss
         except ImportError:
-            print("Warning: Could not import recommended_trading_loss")
-            recommended_trading_loss = None
+            print("Warning: Could not import precision_focused_balanced_loss")
+            precision_focused_balanced_loss = None
         
         custom_objects = {
-            'precision_focused_balanced_loss': precision_focused_balanced_loss,
+            'recommended_trading_loss': recommended_trading_loss,
             'LearnablePositionalEncoding': LearnablePositionalEncoding,
             'StochasticGatedTransformerBlock': StochasticGatedTransformerBlock,
             'AddTypeEmbedding': AddTypeEmbedding,
@@ -72,21 +72,21 @@ class InstrumentFineTuningPipeline:
         }
         
         # Add the original loss function if available
-        if recommended_trading_loss is not None:
-            custom_objects['recommended_trading_loss'] = recommended_trading_loss
+        if precision_focused_balanced_loss is not None:
+            custom_objects['precision_focused_balanced_loss'] = precision_focused_balanced_loss
         
         model = tf.keras.models.load_model(self.recent_model_path, custom_objects=custom_objects)
         print("Recent model loaded successfully")
         return model
     
-    def setup_model_for_fine_tuning(self, base_model, learning_rate_factor=0.01):
+    def setup_model_for_fine_tuning(self, base_model, learning_rate_factor=0.05):
         """Setup model for instrument-specific fine-tuning with very low learning rate"""
         # Create new optimizer with very low learning rate for fine-tuning
         reduced_lr = LR * learning_rate_factor
         lr_schedule = WarmupCosineDecay(
             initial_lr=reduced_lr, 
-            warmup_steps=WARMUP // 50,  # Very short warmup for fine-tuning
-            decay_steps=DECAY // 50     # Very short decay for fine-tuning
+            warmup_steps=WARMUP // 40,  # Very short warmup for fine-tuning
+            decay_steps=DECAY // 40     # Very short decay for fine-tuning
         )
         
         optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule, clipnorm=1.0)
@@ -100,7 +100,7 @@ class InstrumentFineTuningPipeline:
         # Compile model
         base_model.compile(
             optimizer=optimizer,
-            loss=precision_focused_balanced_loss,
+            loss=recommended_trading_loss,
             metrics=['accuracy', auc, prec, recall]
         )
         
@@ -190,7 +190,7 @@ class InstrumentFineTuningPipeline:
         callback.set_initial_state(best_val_loss, patience_count, global_step)
         
         # Train the model
-        total_epochs = 15  # Fewer epochs for instrument-specific fine-tuning
+        total_epochs = 50  # Fewer epochs for instrument-specific fine-tuning
         remaining_epochs = total_epochs - initial_epoch
         
         if remaining_epochs > 0:
@@ -242,13 +242,13 @@ class InstrumentFineTuningPipeline:
             
             # Import both loss functions for loading
             try:
-                from losses import recommended_trading_loss
+                from losses import precision_focused_balanced_loss
             except ImportError:
-                print("Warning: Could not import recommended_trading_loss")
-                recommended_trading_loss = None
+                print("Warning: Could not import precision_focused_balanced_loss")
+                precision_focused_balanced_loss = None
             
             custom_objects = {
-                'precision_focused_balanced_loss': precision_focused_balanced_loss,
+                'recommended_trading_loss': recommended_trading_loss,
                 'LearnablePositionalEncoding': LearnablePositionalEncoding,
                 'StochasticGatedTransformerBlock': StochasticGatedTransformerBlock,
                 'AddTypeEmbedding': AddTypeEmbedding,
@@ -257,8 +257,8 @@ class InstrumentFineTuningPipeline:
             }
             
             # Add the original loss function if available
-            if recommended_trading_loss is not None:
-                custom_objects['recommended_trading_loss'] = recommended_trading_loss
+            if precision_focused_balanced_loss is not None:
+                custom_objects['precision_focused_balanced_loss'] = precision_focused_balanced_loss
             
             best_model = tf.keras.models.load_model(best_instrument_path, custom_objects=custom_objects)
             return best_model

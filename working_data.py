@@ -518,6 +518,8 @@ def regression_label_df(df,
 
             if prev < temp_low:
                 temp_low = prev
+        if high == 0:
+            low = temp_low
         df.at[index, 'target_high'] = high/mean_candle
         df.at[index, 'target_low'] = low/mean_candle
     

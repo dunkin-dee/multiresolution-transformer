@@ -83,7 +83,7 @@ class InstrumentChunkManager:
         
         # Load chunk
         chunk_path = os.path.join(self.instrument_config.chunked_data_dir, self.chunk_files[chunk_idx])
-        required_cols = self.feature_columns + ['include', 'time', 'target_high', 'target_low']  # ← CHANGED
+        required_cols = list(set(self.feature_columns + ['include', 'time', 'target_high', 'target_low']))
         
         try:
             chunk_df = pl.scan_csv(chunk_path).select(required_cols).collect()
@@ -126,7 +126,7 @@ class SingleInstrumentProcessor:
         logger.info(f"Loading hourly data for {self.instrument_config.name}...")
         
         try:
-            hourly_cols = self.config.feature_columns + ['time']
+            hourly_cols = list(set(self.config.feature_columns + ['time']))
             hourly_df = pl.scan_csv(self.instrument_config.hourly_data_path).select(hourly_cols).collect()
             
             if hourly_df.shape[0] < self.config.hourly_lookback_tokens + 1:

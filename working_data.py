@@ -3,7 +3,7 @@ import numpy as np
 import os
 import talib
 from sklearn.model_selection import train_test_split
-
+from math import inf
 
 def clean_cols(df):
     clear_cols = ['spread', 'tick_volume', 'real_volume']
@@ -427,6 +427,99 @@ def alt_label_df(df,
         
         if target_hit:
             df.at[index, 'target'] = 1
+    
+    # Remove the temporary candle column and return
+    df = df.drop(columns=['candle'])
+    return df.iloc[:len(df) - window_size].copy()
+
+def regression_label_df(df, 
+                 window_size=60, 
+                 positive_slope=0.4, 
+                 negative_slope=0.8,
+                 starting_hour=0,
+                 ending_hour=24,
+                 lookback_window=64):
+    """
+    Label buy signals in normalized OHLC data.
+    
+    Parameters:
+    - df: DataFrame with normalized OHLC data
+    - window_size: Lookforward window to check for target achievement
+    - positive_slope: Lower bound for close_normalized (buy zone)
+    - negative_slope: Upper bound for close_normalized (buy zone)  
+    - starting_hour: Start of trading window
+    - ending_hour: End of trading window
+    
+    """
+    df = df.copy()  # Avoid modifying original DataFrame
+    df = df.reset_index(drop=True)
+    
+    # Calculate candle body size
+    df['candle'] = df['close_normalized_for_label'] - df['open_normalized_for_label']
+    df['target_high'] = 0.0
+    df['target_low'] = 0.0
+    df['include'] = 0
+
+    
+    # Check if hour_of_day column exists
+    has_hour_filter = 'hour_of_day' in df.columns
+    
+    for index in range(lookback_window, len(df) - window_size):
+        lookback_start = max(0, index - lookback_window)
+        mean_candle = df['candle'].iloc[lookback_start:index].abs().mean()
+        row = df.iloc[index]
+        
+        if index == 0:
+            continue
+
+        if mean_candle == 0:
+            continue
+            
+        current_close = row['close']
+        current_open = row['open']
+        prev_row = df.iloc[index - 1]
+        prev_close = prev_row['close']
+        prev_open = prev_row['open']
+        
+        # Condition 1: Both current and previous candles are bullish
+        condition1 = (current_close > current_open) and (prev_close > prev_open)
+        
+        # Condition 2: Current close is above previous open
+        condition2 = current_close > prev_open
+        
+        # Filter 1: Must meet either condition
+        if not (condition1 or condition2):
+            continue
+            
+        # Filter 2: Check if price is in acceptable range (buy zone)
+        if row['close_normalized'] > negative_slope or row['close_normalized'] < positive_slope:
+            continue
+            
+        # Filter 3: Check trading hours (if column exists)
+        if has_hour_filter:
+            if row['hour_of_day'] < starting_hour or row['hour_of_day'] >= ending_hour:
+                continue
+
+        df.at[index, 'include'] = 1
+
+        high = 0
+        low = 0
+        temp_low = 0
+        prev = 0
+        
+        for mini_index in range(index + 1, min(index + window_size + 1, len(df))):
+            mini_row = df.iloc[mini_index]            
+            temp_candle = mini_row['close_normalized_for_label'] - mini_row['open_normalized_for_label']
+            prev += temp_candle
+
+            if prev > high:
+                high = prev
+                low = temp_low
+
+            if prev < temp_low:
+                temp_low = prev
+        df.at[index, 'target_high'] = high/mean_candle
+        df.at[index, 'target_low'] = low/mean_candle
     
     # Remove the temporary candle column and return
     df = df.drop(columns=['candle'])

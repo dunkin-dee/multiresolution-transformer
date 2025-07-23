@@ -1,7 +1,7 @@
 # =============================================================================
 # INSTRUMENT CONFIGURATION - CHANGE THIS TO TRAIN ON DIFFERENT INSTRUMENTS
 # =============================================================================
-TARGET_INSTRUMENT = 'GBPUSD#'  # Change this to: 'EURUSD#', 'GBPUSD#', 'USDJPY#', 'AUDUSD#'
+TARGET_INSTRUMENT = 'USDCHF#'  # Change this to: 'EURUSD#', 'GBPUSD#', 'USDJPY#', 'AUDUSD#'
 # =============================================================================
 
 import tensorflow as tf

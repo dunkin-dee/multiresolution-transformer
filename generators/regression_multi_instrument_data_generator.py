@@ -247,7 +247,7 @@ class MultiInstrumentDataGenerator:
         return len(self.global_indices)  # ← SIMPLIFIED
     
 
-    def generate_batches(self) -> Generator[Tuple[tf.Tensor, tf.Tensor, tf.Tensor], None, None]:
+    def generate_batches(self) -> Generator[Tuple[tf.Tensor, tf.Tensor, Dict[str, tf.Tensor]], None, None]:
         """Generate batches of data from all instruments"""
         while True:  # Infinite generator for epochs
             working_indices = self.global_indices.copy()
@@ -260,7 +260,7 @@ class MultiInstrumentDataGenerator:
                                 len(self.config.feature_columns)), dtype=np.float32)
             batch_hourly = np.empty((self.config.batch_size, self.config.hourly_lookback_tokens, 
                                 len(self.config.feature_columns)), dtype=np.float32)
-            batch_targets = np.empty((self.config.batch_size, 2), dtype=np.float32)  # ← CHANGED: shape (batch_size, 2)
+            batch_targets = np.empty((self.config.batch_size, 2), dtype=np.float32)
             
             batch_idx = 0
             samples_processed = 0
@@ -277,16 +277,19 @@ class MultiInstrumentDataGenerator:
                     
                     batch_main[batch_idx] = main_seq
                     batch_hourly[batch_idx] = hourly_seq
-                    batch_targets[batch_idx] = targets  # ← targets is now [target_high, target_low]
+                    batch_targets[batch_idx] = targets
                     batch_idx += 1
                     samples_processed += 1
                     
                     if batch_idx == self.config.batch_size:
-                        # Yield full batch
+                        # Yield full batch with dictionary targets
                         yield (
                             tf.convert_to_tensor(batch_main, dtype=tf.float32),
                             tf.convert_to_tensor(batch_hourly, dtype=tf.float32),
-                            tf.convert_to_tensor(batch_targets, dtype=tf.float32)  # ← CHANGED: float32 for regression
+                            {
+                                'target_high': tf.convert_to_tensor(batch_targets[:, 0], dtype=tf.float32),
+                                'target_low': tf.convert_to_tensor(batch_targets[:, 1], dtype=tf.float32)
+                            }
                         )
                         batch_idx = 0
                 
@@ -300,10 +303,14 @@ class MultiInstrumentDataGenerator:
                 yield (
                     tf.convert_to_tensor(batch_main[:batch_idx], dtype=tf.float32),
                     tf.convert_to_tensor(batch_hourly[:batch_idx], dtype=tf.float32),
-                    tf.convert_to_tensor(batch_targets[:batch_idx], dtype=tf.float32)  # ← CHANGED: float32
+                    {
+                        'target_high': tf.convert_to_tensor(batch_targets[:batch_idx, 0], dtype=tf.float32),
+                        'target_low': tf.convert_to_tensor(batch_targets[:batch_idx, 1], dtype=tf.float32)
+                    }
                 )
             
             break  # Remove for infinite epochs
+
     
     def get_dataset_info(self) -> Dict[str, Any]:
         """Get comprehensive information about the multi-instrument dataset"""
@@ -341,12 +348,15 @@ def create_multi_instrument_dataset(config: MultiInstrumentDatasetConfig, repeat
         output_signature=(
             tf.TensorSpec(shape=(None, config.main_lookback_tokens, len(config.feature_columns)), dtype=tf.float32),
             tf.TensorSpec(shape=(None, config.hourly_lookback_tokens, len(config.feature_columns)), dtype=tf.float32),
-            tf.TensorSpec(shape=(None, 2), dtype=tf.float32)  # ← CHANGED: shape (None, 2) for dual targets
+            {
+                'target_high': tf.TensorSpec(shape=(None,), dtype=tf.float32),
+                'target_low': tf.TensorSpec(shape=(None,), dtype=tf.float32)
+            }
         )
     )
     
-    # Map to expected format ((main_input, hourly_input), target)
-    dataset = dataset.map(lambda main, hourly, target: ((main, hourly), target))
+    # Map to expected format ((main_input, hourly_input), targets_dict)
+    dataset = dataset.map(lambda main, hourly, targets: ((main, hourly), targets))
     
     if repeat_dataset:
         dataset = dataset.repeat()

@@ -312,14 +312,19 @@ class WarmupCosineDecay(tf.keras.optimizers.schedules.LearningRateSchedule):
         }
 
 class AddTypeEmbedding(Layer):
-    def __init__(self, type_id, embed_dim=16, **kwargs):
+    def __init__(self, type_id, embed_dim=16, num_types=3, **kwargs):
         super().__init__(**kwargs)
         self.type_id = type_id
         self.embed_dim = embed_dim
+        self.num_types = num_types
         self.embedding_layer = None
         
     def build(self, input_shape):
-        self.embedding_layer = Embedding(input_dim=2, output_dim=self.embed_dim, name=f'{self.name}_embed')
+        self.embedding_layer = Embedding(
+            input_dim=self.num_types, 
+            output_dim=self.embed_dim, 
+            name=f'{self.name}_embed'
+        )
         super().build(input_shape)
         
     def call(self, inputs):
@@ -333,10 +338,10 @@ class AddTypeEmbedding(Layer):
         config = super().get_config()
         config.update({
             "type_id": self.type_id,
-            "embed_dim": self.embed_dim
+            "embed_dim": self.embed_dim,
+            "num_types": self.num_types
         })
         return config
-
 
 class AttentionPooling(Layer):
     def __init__(self, **kwargs):

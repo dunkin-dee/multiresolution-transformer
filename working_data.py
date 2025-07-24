@@ -16,6 +16,86 @@ def clean_non_minute_rows(df):
         return df
     return df[cut_off:]
 
+import pandas as pd
+import talib
+import numpy as np
+
+import pandas as pd
+import talib
+import numpy as np
+
+def add_partial_rsi(df, hour_df, period=14):
+    """
+    Calculate partial RSI for 5-minute data using historical hourly data (vectorized version).
+    
+    Parameters:
+    df: DataFrame with 5-minute data containing 'datetime' and 'partial_close' columns
+    hour_df: DataFrame with hourly data containing 'datetime' and 'close' columns
+    period: RSI period (default 14)
+    
+    Returns:
+    DataFrame with added 'partial_rsi' column
+    """
+    # Create copies to avoid modifying original dataframes
+    result_df = df.copy()
+    hour_df_copy = hour_df.copy()
+    
+    # Ensure datetime columns are datetime type and sort
+    result_df['datetime'] = pd.to_datetime(result_df['datetime'])
+    hour_df_copy['datetime'] = pd.to_datetime(hour_df_copy['datetime'])
+    hour_df_copy = hour_df_copy.sort_values('datetime').reset_index(drop=True)
+    
+    # Create base hour column for 5-minute data
+    result_df['base_hour'] = result_df['datetime'].dt.floor('H')
+    
+    # Create shifted columns for the 13 previous hourly closes
+    hour_shifts = {}
+    for i in range(1, period+1):
+        hour_shifts[f'close_lag_{i}'] = hour_df_copy['close'].shift(i)
+    
+    # Create a dataframe with shifted values
+    hour_with_lags = pd.concat([hour_df_copy[['datetime', 'close']], 
+                               pd.DataFrame(hour_shifts)], axis=1)
+    
+    # Merge with 5-minute data using base_hour
+    merged = pd.merge_asof(
+        result_df.sort_values('base_hour'),
+        hour_with_lags.sort_values('datetime'),
+        left_on='base_hour',
+        right_on='datetime',
+        direction='backward',
+        suffixes=('', '_hourly')
+    )
+    
+    # Create arrays for vectorized RSI calculation
+    def calculate_rsi_row(row):
+        # Extract the 14 lagged values
+        lag_cols = [f'close_lag_{i}' for i in range(period, 0, -1)]  # reverse order for chronological
+        historical_values = row[lag_cols].values
+
+        # Check if we have all 13 values (no NaN)
+        if pd.isna(historical_values).any():
+            return np.nan
+            
+        # Combine with partial_close
+        combined_closes = np.concatenate([historical_values, [row['partial_close']]])       
+        
+        # Calculate RSI
+        if len(combined_closes) >= period:
+            rsi_values = talib.RSI(combined_closes.astype(float), timeperiod=period)
+            return rsi_values[-1]
+        else:
+            return np.nan
+    
+    # Apply RSI calculation vectorized across rows
+    merged['partial_rsi'] = merged.apply(calculate_rsi_row, axis=1)/100
+    
+    # Sort back to original order and return only original columns plus partial_rsi
+    result_df = merged.sort_values('datetime').drop(columns=['base_hour', 'datetime_hourly'] + 
+                                                   [f'close_lag_{i}' for i in range(1, 14)])
+    
+    return result_df
+
 def clean_five_minute_data(df):
     """
     Clean OHLC data to keep only entries that follow 5-minute intervals.
@@ -162,8 +242,71 @@ def add_rsi(df):
 def add_timing(df):
     df['datetime'] = pd.to_datetime(df['time'], unit='s')
     df['hour_of_day'] = df['datetime'].dt.hour
-    df['position_in_hour'] = (df['datetime'].dt.minute / 55)
+    df['position_in_hour'] = df['datetime'].dt.minute
+    df['partial_hour_length'] = df['datetime'].dt.minute * 0.2
     return df
+
+def add_partial_hour_ohlc(df):
+    # make sure 'datetime' exists
+    if 'datetime' not in df:
+        df = add_timing(df)
+
+    # create an "hour bucket"
+    df['hour_start'] = df['datetime'].dt.floor('H')
+
+    # first open of the hour
+    df['partial_open'] = df.groupby('hour_start')['open'].transform('first')
+    # running high
+    df['partial_high'] = df.groupby('hour_start')['high'].cummax()
+    # running low
+    df['partial_low'] = df.groupby('hour_start')['low'].cummin()
+    # current close is already the "partial close"
+    df['partial_close'] = df['close']
+
+    # if you don't need the helper column any more
+    df.drop(columns=['hour_start'], inplace=True)
+
+    return df
+
+def normalize_partial_hour(df,
+                           hour_df, 
+                           features=[
+                               'partial_open', 
+                               'partial_high', 
+                               'partial_low', 
+                               'partial_close'
+                               ],
+                            high_col='partial_high',
+                            low_col='partial_low',
+                            hour_high='for_partial_hour_window_max',
+                            hour_low='for_partial_hour_window_min'):
+    # 1. Make a copy so we don’t clobber the originals
+    df = df.copy()
+    hour_df = hour_df.copy()
+
+    # 2. Create the “base hour” column on each
+    df['base_hour'] = df['datetime'].dt.floor('H')
+    hour_df['hour_datetime'] = hour_df['datetime']
+
+    merged = pd.merge_asof(
+        left=df,
+        right=hour_df[['hour_datetime', hour_high, hour_low]],
+        left_on='base_hour',
+        right_on='hour_datetime',
+        direction='backward'
+    )
+
+    merged['partial_max'] = merged[[high_col, hour_high]].max(axis=1)
+    merged['partial_min'] = merged[[low_col, hour_low]].min(axis=1)
+
+    for feature in features:
+        merged[f"{feature}_normalized"] = merged[feature] = (merged[feature] - merged['partial_min']) / (merged['partial_max'] - merged['partial_min'])
+    drop_cols = ['base_hour', 'hour_datetime', 'partial_max', 'partial_min']
+
+    merged.drop(columns=drop_cols, inplace=True)
+    return merged
+
+
 
 def add_hour_position(df):
     """
@@ -213,7 +356,8 @@ def normalize_by_window(
             'high',
             'low',
             'close'],
-        label_cols=[]):
+        label_cols=[],
+        add_partial_hour=False):
     """
     Normalize columns by rolling window min/max values.
     
@@ -233,25 +377,41 @@ def normalize_by_window(
     col_split = [col_numbers[i:i + chunk_size] for i in range(0, len(col_numbers), chunk_size)]
     df['window_min'] = df[low_col]
     df['window_max'] = df[high_col]
+    if add_partial_hour:
+        df['for_partial_hour_window_min'] = df[low_col]
+        df['for_partial_hour_window_max'] = df[high_col]
+        partial_exclude = col_numbers[-1]
 
     for col_range in col_split:
         high_cols = []
         low_cols = []
-        
+        partial_high_cols = []
+        partial_low_cols = []
+
         for x in col_range:
             high_col_name = f"{high_col}-{x}"
             df[high_col_name] = df[high_col].shift(x)
             high_cols.append(high_col_name)
+            if add_partial_hour and x != partial_exclude:
+                partial_high_cols.append(high_col_name)
         high_cols_inclusive = high_cols + ['window_max']
         df['window_max'] = df[high_cols_inclusive].max(axis=1)
+        if add_partial_hour:
+            partial_high_cols_inclusive = partial_high_cols + ['for_partial_hour_window_max']
+            df['for_partial_hour_window_max'] = df[partial_high_cols_inclusive].max(axis=1)
         df.drop(columns=high_cols, inplace=True)
 
         for x in col_range:
             low_col_name = f"{low_col}-{x}"
             df[low_col_name] = df[low_col].shift(x)
             low_cols.append(low_col_name)
+            if add_partial_hour and x != partial_exclude:
+                partial_low_cols.append(low_col_name)
         low_cols_inclusive = low_cols + ['window_min']
         df['window_min'] = df[low_cols_inclusive].min(axis=1)
+        if add_partial_hour:
+            partial_low_cols_inclusive = partial_low_cols + ['for_partial_hour_window_min']
+            df['for_partial_hour_window_min'] = df[partial_low_cols_inclusive].min(axis=1)
         df.drop(columns=low_cols, inplace=True)
 
     # Normalize the main columns using current window

@@ -83,7 +83,12 @@ class InstrumentChunkManager:
         
         # Load chunk
         chunk_path = os.path.join(self.instrument_config.chunked_data_dir, self.chunk_files[chunk_idx])
-        required_cols = list(set(self.feature_columns + ['include', 'time', 'target_high', 'target_low']))
+        required_cols = list(set(self.feature_columns + [
+            'include', 'time', 'target_high', 'target_low',
+            'partial_open_normalized', 'partial_high_normalized', 
+            'partial_low_normalized', 'partial_close_normalized', 'partial_rsi',
+            'position_in_hour', 'partial_hour_length'
+        ]))
         
         try:
             chunk_df = pl.scan_csv(chunk_path).select(required_cols).collect()
@@ -167,8 +172,8 @@ class SingleInstrumentProcessor:
         
         logger.info(f"Built indices for {self.instrument_config.name}: {len(self.valid_indices)} valid samples")
     
-    def extract_sample(self, chunk_idx: int, row_idx: int) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
-        """Extract a single sample with error handling - returns dual targets"""
+    def extract_sample(self, chunk_idx: int, row_idx: int) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
+        """Extract a single sample with error handling - returns dual targets plus partial hour data"""
         try:
             chunk_df = self.chunk_manager.get_chunk(chunk_idx)
             
@@ -194,9 +199,18 @@ class SingleInstrumentProcessor:
             target_values = np.array([
                 chunk_df[row_idx, 'target_high'], 
                 chunk_df[row_idx, 'target_low']
-            ], dtype=np.float32)  # ← CHANGED: dual regression targets
+            ], dtype=np.float32)
             
-            return main_input, hourly_sequence, target_values
+            # NEW: Extract partial hour data (single row, current values only)
+            partial_hour_cols = ['partial_open_normalized', 'partial_high_normalized', 
+                            'partial_low_normalized', 'partial_close_normalized', 'partial_rsi']
+            partial_hour_data = chunk_df[row_idx, partial_hour_cols].to_numpy().reshape(1, -1)  # Shape: (1, 5)
+            
+            # NEW: Extract temporal context
+            minutes_into_hour = np.array([chunk_df[row_idx, 'position_in_hour']], dtype=np.float32)
+            partial_hour_length = np.array([chunk_df[row_idx, 'partial_hour_length']], dtype=np.float32)
+            
+            return main_input, hourly_sequence, target_values, partial_hour_data, minutes_into_hour, partial_hour_length
         
         except Exception as e:
             logger.error(f"Error extracting sample for {self.instrument_config.name} ({chunk_idx}, {row_idx}): {e}")
@@ -247,7 +261,7 @@ class MultiInstrumentDataGenerator:
         return len(self.global_indices)  # ← SIMPLIFIED
     
 
-    def generate_batches(self) -> Generator[Tuple[tf.Tensor, tf.Tensor, Dict[str, tf.Tensor]], None, None]:
+    def generate_batches(self) -> Generator[Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor, Dict[str, tf.Tensor]], None, None]:
         """Generate batches of data from all instruments"""
         while True:  # Infinite generator for epochs
             working_indices = self.global_indices.copy()
@@ -261,6 +275,10 @@ class MultiInstrumentDataGenerator:
             batch_hourly = np.empty((self.config.batch_size, self.config.hourly_lookback_tokens, 
                                 len(self.config.feature_columns)), dtype=np.float32)
             batch_targets = np.empty((self.config.batch_size, 2), dtype=np.float32)
+            # NEW: Add batch arrays for partial hour data
+            batch_partial = np.empty((self.config.batch_size, 1, 5), dtype=np.float32)  # 5 partial columns
+            batch_minutes = np.empty((self.config.batch_size, 1), dtype=np.float32)
+            batch_length = np.empty((self.config.batch_size, 1), dtype=np.float32)
             
             batch_idx = 0
             samples_processed = 0
@@ -273,19 +291,27 @@ class MultiInstrumentDataGenerator:
                     if sample_data is None:
                         continue
                     
-                    main_seq, hourly_seq, targets = sample_data
+                    # UPDATED: Unpack additional data
+                    main_seq, hourly_seq, targets, partial_data, minutes, length = sample_data
                     
                     batch_main[batch_idx] = main_seq
                     batch_hourly[batch_idx] = hourly_seq
                     batch_targets[batch_idx] = targets
+                    # NEW: Fill partial hour arrays
+                    batch_partial[batch_idx] = partial_data
+                    batch_minutes[batch_idx] = minutes
+                    batch_length[batch_idx] = length
                     batch_idx += 1
                     samples_processed += 1
                     
                     if batch_idx == self.config.batch_size:
-                        # Yield full batch with dictionary targets
+                        # Yield full batch with additional inputs
                         yield (
                             tf.convert_to_tensor(batch_main, dtype=tf.float32),
                             tf.convert_to_tensor(batch_hourly, dtype=tf.float32),
+                            tf.convert_to_tensor(batch_partial, dtype=tf.float32),
+                            tf.convert_to_tensor(batch_minutes, dtype=tf.float32),
+                            tf.convert_to_tensor(batch_length, dtype=tf.float32),
                             {
                                 'target_high': tf.convert_to_tensor(batch_targets[:, 0], dtype=tf.float32),
                                 'target_low': tf.convert_to_tensor(batch_targets[:, 1], dtype=tf.float32)
@@ -303,6 +329,9 @@ class MultiInstrumentDataGenerator:
                 yield (
                     tf.convert_to_tensor(batch_main[:batch_idx], dtype=tf.float32),
                     tf.convert_to_tensor(batch_hourly[:batch_idx], dtype=tf.float32),
+                    tf.convert_to_tensor(batch_partial[:batch_idx], dtype=tf.float32),
+                    tf.convert_to_tensor(batch_minutes[:batch_idx], dtype=tf.float32),
+                    tf.convert_to_tensor(batch_length[:batch_idx], dtype=tf.float32),
                     {
                         'target_high': tf.convert_to_tensor(batch_targets[:batch_idx, 0], dtype=tf.float32),
                         'target_low': tf.convert_to_tensor(batch_targets[:batch_idx, 1], dtype=tf.float32)
@@ -348,15 +377,19 @@ def create_multi_instrument_dataset(config: MultiInstrumentDatasetConfig, repeat
         output_signature=(
             tf.TensorSpec(shape=(None, config.main_lookback_tokens, len(config.feature_columns)), dtype=tf.float32),
             tf.TensorSpec(shape=(None, config.hourly_lookback_tokens, len(config.feature_columns)), dtype=tf.float32),
+            tf.TensorSpec(shape=(None, 1, 5), dtype=tf.float32),  # NEW: partial hour data
+            tf.TensorSpec(shape=(None, 1), dtype=tf.float32),     # NEW: minutes into hour
+            tf.TensorSpec(shape=(None, 1), dtype=tf.float32),     # NEW: partial hour length
             {
                 'target_high': tf.TensorSpec(shape=(None,), dtype=tf.float32),
                 'target_low': tf.TensorSpec(shape=(None,), dtype=tf.float32)
             }
         )
     )
-    
-    # Map to expected format ((main_input, hourly_input), targets_dict)
-    dataset = dataset.map(lambda main, hourly, targets: ((main, hourly), targets))
+
+    # Map to expected format
+    dataset = dataset.map(lambda main, hourly, partial, minutes, length, targets: 
+                        ((main, hourly, partial, minutes, length), targets))
     
     if repeat_dataset:
         dataset = dataset.repeat()

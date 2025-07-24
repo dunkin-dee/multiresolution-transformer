@@ -104,8 +104,8 @@ def create_regression_model(input_shape=(64, 4), other_input_shape=(64, 4),
     input_layer = Input(shape=input_shape, name='minute_input')
     
     # Hourly data input
-    other_input_layer = Input(shape=other_input_shape, name='hourly_input')
     other_input_shape = (OTHER_TOKENS, len(feature_cols))
+    other_input_layer = Input(shape=other_input_shape, name='hourly_input')
     
     # Improved CNN block function
     def cnn_feature_extractor(inputs, name_prefix, max_filter_output=d_model-16):

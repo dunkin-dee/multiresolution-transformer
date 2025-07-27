@@ -104,8 +104,7 @@ def create_regression_model(input_shape=(64, 5), other_input_shape=(64, 5),
                                'open_normalized',
                                'high_normalized', 
                                'low_normalized',
-                               'close_normalized',
-                               'rsi']):
+                               'close_normalized']):
     
     # Main (5-minute) data input - normalized on 5-min lookback
     input_shape = (NUM_TOKENS, len(feature_cols))

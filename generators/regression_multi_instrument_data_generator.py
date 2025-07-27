@@ -86,7 +86,7 @@ class InstrumentChunkManager:
         required_cols = list(set(self.feature_columns + [
             'include', 'time', 'target_high', 'target_low',
             'partial_open_normalized', 'partial_high_normalized', 
-            'partial_low_normalized', 'partial_close_normalized', 'partial_rsi',
+            'partial_low_normalized', 'partial_close_normalized',
             'position_in_hour', 'partial_hour_length'
         ]))
         
@@ -203,7 +203,7 @@ class SingleInstrumentProcessor:
             
             # NEW: Extract partial hour data (single row, current values only)
             partial_hour_cols = ['partial_open_normalized', 'partial_high_normalized', 
-                            'partial_low_normalized', 'partial_close_normalized', 'partial_rsi']
+                            'partial_low_normalized', 'partial_close_normalized']
             partial_hour_data = chunk_df[row_idx, partial_hour_cols].to_numpy().reshape(1, -1)  # Shape: (1, 5)
             
             # NEW: Extract temporal context
@@ -276,7 +276,7 @@ class MultiInstrumentDataGenerator:
                                 len(self.config.feature_columns)), dtype=np.float32)
             batch_targets = np.empty((self.config.batch_size, 2), dtype=np.float32)
             # NEW: Add batch arrays for partial hour data
-            batch_partial = np.empty((self.config.batch_size, 1, 5), dtype=np.float32)  # 5 partial columns
+            batch_partial = np.empty((self.config.batch_size, 1, 4), dtype=np.float32)  # 5 partial columns
             batch_minutes = np.empty((self.config.batch_size, 1), dtype=np.float32)
             batch_length = np.empty((self.config.batch_size, 1), dtype=np.float32)
             
@@ -377,7 +377,7 @@ def create_multi_instrument_dataset(config: MultiInstrumentDatasetConfig, repeat
         output_signature=(
             tf.TensorSpec(shape=(None, config.main_lookback_tokens, len(config.feature_columns)), dtype=tf.float32),
             tf.TensorSpec(shape=(None, config.hourly_lookback_tokens, len(config.feature_columns)), dtype=tf.float32),
-            tf.TensorSpec(shape=(None, 1, 5), dtype=tf.float32),  # NEW: partial hour data
+            tf.TensorSpec(shape=(None, 1, 4), dtype=tf.float32),  # NEW: partial hour data
             tf.TensorSpec(shape=(None, 1), dtype=tf.float32),     # NEW: minutes into hour
             tf.TensorSpec(shape=(None, 1), dtype=tf.float32),     # NEW: partial hour length
             {

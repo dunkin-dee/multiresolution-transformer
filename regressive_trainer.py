@@ -65,7 +65,7 @@ def get_datasets_and_steps(instruments=instruments, working_path=working_path, f
         noise_std_5min=0.001,       # Small noise for 5-minute data
         noise_std_hourly=0.01,      # Noise std for hourly (not used since disabled)
         noise_probability_5min=0.3, # 80% chance of adding noise to 5-minute data
-        noise_probability_hourly=0.4 # 100% chance when enabled (not used since disabled)
+        noise_probability_hourly=0.3 # 100% chance when enabled (not used since disabled)
     )
 
     val_config = MultiInstrumentDatasetConfig(

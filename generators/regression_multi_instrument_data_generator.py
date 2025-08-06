@@ -35,7 +35,15 @@ class MultiInstrumentDatasetConfig:
     batch_size: int = 32
     shuffle_data: bool = False
     feature_columns: List[str] = None
-    max_chunks_per_instrument: int = 20  # Memory management per instrument
+    max_chunks_per_instrument: int = 20
+    
+    # NEW: Noise parameters - independent control for 5-minute and hourly data
+    add_noise_5min: bool = False  # Enable/disable noise for 5-minute data
+    add_noise_hourly: bool = False  # Enable/disable noise for hourly data
+    noise_std_5min: float = 0.01  # Standard deviation for 5-minute data noise
+    noise_std_hourly: float = 0.01  # Standard deviation for hourly data noise
+    noise_probability_5min: float = 1.0  # Probability of adding noise to 5-minute data (0.0 to 1.0)
+    noise_probability_hourly: float = 1.0  # Probability of adding noise to hourly data (0.0 to 1.0)
     
     def __post_init__(self):
         if self.feature_columns is None:
@@ -48,6 +56,38 @@ class MultiInstrumentDatasetConfig:
             raise ValueError("Lookback tokens must be positive integers")
         if self.batch_size <= 0:
             raise ValueError("Batch size must be positive")
+        
+        # NEW: Noise validation
+        if self.noise_std_5min < 0 or self.noise_std_hourly < 0:
+            raise ValueError("Noise standard deviations must be non-negative")
+        if not 0.0 <= self.noise_probability_5min <= 1.0:
+            raise ValueError("5-minute noise probability must be between 0.0 and 1.0")
+        if not 0.0 <= self.noise_probability_hourly <= 1.0:
+            raise ValueError("Hourly noise probability must be between 0.0 and 1.0")
+
+
+def add_gaussian_noise(data: np.ndarray, noise_std: float, probability: float = 1.0, 
+                      clip_range: Tuple[float, float] = (0.0, 1.0)) -> np.ndarray:
+    """
+    Add Gaussian noise to data with optional probability and clipping.
+    
+    Args:
+        data: Input data array
+        noise_std: Standard deviation of Gaussian noise
+        probability: Probability of adding noise (0.0 to 1.0)
+        clip_range: Range to clip values after adding noise
+        
+    Returns:
+        Data with noise added (if applied)
+    """
+    if noise_std <= 0 or np.random.random() > probability:
+        return data
+    
+    noise = np.random.normal(0, noise_std, data.shape).astype(data.dtype)
+    noisy_data = data + noise
+    
+    # Clip to valid range since data is scaled 0-1
+    return np.clip(noisy_data, clip_range[0], clip_range[1])
 
 
 class InstrumentChunkManager:
@@ -198,15 +238,30 @@ class SingleInstrumentProcessor:
             main_input = main_sequence[-self.config.main_lookback_tokens:]
             target_values = np.array([
                 chunk_df[row_idx, 'target_high'], 
-                chunk_df[row_idx, 'target_low']
+                # chunk_df[row_idx, 'target_low']
             ], dtype=np.float32)
             
-            # NEW: Extract partial hour data (single row, current values only)
+            # NEW: Apply noise independently to 5-minute and hourly data
+            if self.config.add_noise_5min:
+                main_input = add_gaussian_noise(
+                    main_input, 
+                    self.config.noise_std_5min, 
+                    self.config.noise_probability_5min
+                )
+            
+            if self.config.add_noise_hourly:
+                hourly_sequence = add_gaussian_noise(
+                    hourly_sequence, 
+                    self.config.noise_std_hourly, 
+                    self.config.noise_probability_hourly
+                )
+            
+            # Extract partial hour data (single row, current values only)
             partial_hour_cols = ['partial_open_normalized', 'partial_high_normalized', 
                             'partial_low_normalized', 'partial_close_normalized']
-            partial_hour_data = chunk_df[row_idx, partial_hour_cols].to_numpy().reshape(1, -1)  # Shape: (1, 5)
+            partial_hour_data = chunk_df[row_idx, partial_hour_cols].to_numpy().reshape(1, -1)  # Shape: (1, 4)
             
-            # NEW: Extract temporal context
+            # Extract temporal context
             minutes_into_hour = np.array([chunk_df[row_idx, 'position_in_hour']], dtype=np.float32)
             partial_hour_length = np.array([chunk_df[row_idx, 'partial_hour_length']], dtype=np.float32)
             
@@ -314,7 +369,7 @@ class MultiInstrumentDataGenerator:
                             tf.convert_to_tensor(batch_length, dtype=tf.float32),
                             {
                                 'target_high': tf.convert_to_tensor(batch_targets[:, 0], dtype=tf.float32),
-                                'target_low': tf.convert_to_tensor(batch_targets[:, 1], dtype=tf.float32)
+                                # 'target_low': tf.convert_to_tensor(batch_targets[:, 1], dtype=tf.float32)
                             }
                         )
                         batch_idx = 0
@@ -334,7 +389,7 @@ class MultiInstrumentDataGenerator:
                     tf.convert_to_tensor(batch_length[:batch_idx], dtype=tf.float32),
                     {
                         'target_high': tf.convert_to_tensor(batch_targets[:batch_idx, 0], dtype=tf.float32),
-                        'target_low': tf.convert_to_tensor(batch_targets[:batch_idx, 1], dtype=tf.float32)
+                        # 'target_low': tf.convert_to_tensor(batch_targets[:batch_idx, 1], dtype=tf.float32)
                     }
                 )
             
@@ -352,7 +407,8 @@ class MultiInstrumentDataGenerator:
             'instruments': instrument_stats,
             'total_samples': total_samples,
             'feature_columns': self.config.feature_columns,
-            'target_columns': ['target_high', 'target_low'],
+            # 'target_columns': ['target_high', 'target_low'],
+            'target_columns': ['target_high'],
             'shuffle_enabled': self.config.shuffle_data,
         }
 
@@ -382,7 +438,7 @@ def create_multi_instrument_dataset(config: MultiInstrumentDatasetConfig, repeat
             tf.TensorSpec(shape=(None, 1), dtype=tf.float32),     # NEW: partial hour length
             {
                 'target_high': tf.TensorSpec(shape=(None,), dtype=tf.float32),
-                'target_low': tf.TensorSpec(shape=(None,), dtype=tf.float32)
+                # 'target_low': tf.TensorSpec(shape=(None,), dtype=tf.float32)
             }
         )
     )

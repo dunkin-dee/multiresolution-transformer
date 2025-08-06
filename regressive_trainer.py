@@ -8,11 +8,11 @@ from modeler import create_regression_model
 from transformer_builder import WarmupCosineDecay
 from regression_losses import asymmetric_huber_loss_single, profit_precision_metric, profit_recall_metric
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
+from gradient_monitor import GradientAndWeightMonitor, BranchScalingMonitor
 
 
 starting_dir = "data/final_data"
 working_path = "data/regression"
-instruments = os.listdir(starting_dir)
 
 import os
 from generators.regression_multi_instrument_data_generator import InstrumentConfig, MultiInstrumentDatasetConfig, create_multi_instrument_dataset
@@ -20,6 +20,7 @@ from constants.global_constants import FEATURES, NUM_TOKENS, OTHER_TOKENS, BATCH
 
 
 instruments = os.listdir(working_path)
+instruments = ['SILVER#']
 feature_cols = FEATURES
 
 def get_datasets_and_steps(instruments=instruments, working_path=working_path, feature_cols=feature_cols):
@@ -58,7 +59,13 @@ def get_datasets_and_steps(instruments=instruments, working_path=working_path, f
         batch_size=BATCH_SIZE,
         shuffle_data=True,
         feature_columns=feature_cols,
-        max_chunks_per_instrument=25
+        max_chunks_per_instrument=25,
+        add_noise_5min=False,        # Enable noise for 5-minute data
+        add_noise_hourly=True,     # Disable noise for hourly data
+        noise_std_5min=0.001,       # Small noise for 5-minute data
+        noise_std_hourly=0.01,      # Noise std for hourly (not used since disabled)
+        noise_probability_5min=0.3, # 80% chance of adding noise to 5-minute data
+        noise_probability_hourly=0.4 # 100% chance when enabled (not used since disabled)
     )
 
     val_config = MultiInstrumentDatasetConfig(
@@ -114,24 +121,15 @@ def compile_model_lightweight(model, updelta, downdelta):
     Streamlined compilation with only the most important metrics
     Mixed precision compatible.
     """
-    lr_schedule = WarmupCosineDecay(initial_lr=1e-5, warmup_steps=18000*3, decay_steps=18000*40)
+    lr_schedule = WarmupCosineDecay(initial_lr=1e-4, warmup_steps=train_steps*2, decay_steps=train_steps*40)
     model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=lr_schedule, clipnorm=1.0),
+        optimizer=tf.keras.optimizers.Adam(learning_rate=lr_schedule, clipnorm=0.5, weight_decay=1e-4),
         loss={
             'target_high': asymmetric_huber_loss_single(
-                delta=6.0, 
-                underestimate_weight=3.0, 
-                overestimate_weight=0.5
-            ),
-            'target_low': asymmetric_huber_loss_single(
-                delta=2.0,
-                underestimate_weight=1.0,
-                overestimate_weight=2.0
+                delta=2.5, 
+                underestimate_weight=3.2, 
+                overestimate_weight=0.6
             )
-        },
-        loss_weights={
-            'target_high': 2.0,
-            'target_low': 1.0
         },
         metrics={
             'target_high': [
@@ -139,9 +137,6 @@ def compile_model_lightweight(model, updelta, downdelta):
                 'mse',
                 profit_precision_metric(threshold=6.0),
                 profit_recall_metric(threshold=6.0),
-            ],
-            'target_low': [
-                'mae',
             ]
         }
     )
@@ -153,16 +148,27 @@ model = create_regression_model(feature_cols=feature_cols, d_model=R_D_MODEL, nu
 model = compile_model_lightweight(model=model, updelta=6.0, downdelta=-1.0)
 
 
-early_stopping = EarlyStopping(monitor='val_target_high_metric_1', 
+early_stopping = EarlyStopping(monitor='val_metric_1', 
                                patience=10,
                                mode='max', 
                                verbose=1)
 
 model_checkpoint = ModelCheckpoint('models/regressor.keras', 
-                                   monitor='val_target_high_metric_1', 
+                                   monitor='val_metric_1', 
                                    save_best_only=True, 
                                    mode='max', 
                                    verbose=1)
+
+gradient_monitor = GradientAndWeightMonitor(
+    log_frequency=1,           # Check every epoch
+    gradient_threshold=10.0,   # Alert if gradient norm > 10
+    weight_threshold=100.0     # Alert if any layer weight norm > 100
+)
+
+branch_monitor = BranchScalingMonitor(
+    log_frequency=1,    # Print weights every 5 epochs
+    save_history=True   # Save history for potential plotting
+)
 
 def get_naive_baseline_metrics(val_dataset, val_steps):
     """
@@ -179,39 +185,23 @@ def get_naive_baseline_metrics(val_dataset, val_steps):
     """
     # Collect all target values
     all_target_highs = []
-    all_target_lows = []
+    # all_target_lows = []
     
     for i, batch in enumerate(val_dataset):
         if i >= val_steps:
             break
         (main_input, hourly_input, partial, position, hourly_position), targets = batch
         
-        target_highs = targets['target_high'].numpy()
-        target_lows = targets['target_low'].numpy()
-        
+        target_highs = targets['target_high'].numpy()        
         all_target_highs.extend(target_highs)
-        all_target_lows.extend(target_lows)
     
     all_target_highs = np.array(all_target_highs)
-    all_target_lows = np.array(all_target_lows)
-    
-    # Calculate baselines (mean of all targets for each)
     baseline_high = np.mean(all_target_highs)
-    baseline_low = np.mean(all_target_lows)
-    
-    # Create predictions (always predict the mean)
     predictions_high = np.full_like(all_target_highs, baseline_high)
-    predictions_low = np.full_like(all_target_lows, baseline_low)
-    
-    # Calculate metrics for target_high
     mae_high = np.mean(np.abs(predictions_high - all_target_highs))
     mse_high = np.mean((predictions_high - all_target_highs) ** 2)
     rmse_high = np.sqrt(mse_high)
     
-    # Calculate metrics for target_low
-    mae_low = np.mean(np.abs(predictions_low - all_target_lows))
-    mse_low = np.mean((predictions_low - all_target_lows) ** 2)
-    rmse_low = np.sqrt(mse_low)
     
     return {
         'target_high': {
@@ -220,16 +210,10 @@ def get_naive_baseline_metrics(val_dataset, val_steps):
             'mse': mse_high,
             'rmse': rmse_high
         },
-        'target_low': {
-            'baseline_value': baseline_low,
-            'mae': mae_low,
-            'mse': mse_low,
-            'rmse': rmse_low
-        },
         'total_samples': len(all_target_highs)
     }
 
-print(get_naive_baseline_metrics(val_dataset, val_steps))
+# print(get_naive_baseline_metrics(val_dataset, val_steps))
 
 history = model.fit(
     train_dataset,
@@ -237,5 +221,5 @@ history = model.fit(
     steps_per_epoch=train_steps,
     validation_data=val_dataset,
     validation_steps=val_steps,
-    callbacks=[early_stopping, model_checkpoint]
+    callbacks=[early_stopping, model_checkpoint, gradient_monitor, branch_monitor]
 )

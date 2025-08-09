@@ -20,7 +20,6 @@ from constants.global_constants import FEATURES, NUM_TOKENS, OTHER_TOKENS, BATCH
 
 
 instruments = os.listdir(working_path)
-instruments = ['SILVER#']
 feature_cols = FEATURES
 
 def get_datasets_and_steps(instruments=instruments, working_path=working_path, feature_cols=feature_cols):
@@ -60,12 +59,12 @@ def get_datasets_and_steps(instruments=instruments, working_path=working_path, f
         shuffle_data=True,
         feature_columns=feature_cols,
         max_chunks_per_instrument=25,
-        add_noise_5min=False,        # Enable noise for 5-minute data
+        add_noise_5min=True,        # Enable noise for 5-minute data
         add_noise_hourly=True,     # Disable noise for hourly data
-        noise_std_5min=0.001,       # Small noise for 5-minute data
-        noise_std_hourly=0.01,      # Noise std for hourly (not used since disabled)
-        noise_probability_5min=0.3, # 80% chance of adding noise to 5-minute data
-        noise_probability_hourly=0.3 # 100% chance when enabled (not used since disabled)
+        noise_std_5min=0.008,       # Small noise for 5-minute data
+        noise_std_hourly=0.011,      # Noise std for hourly (not used since disabled)
+        noise_probability_5min=0.45, # 80% chance of adding noise to 5-minute data
+        noise_probability_hourly=0.6 # 100% chance when enabled (not used since disabled)
     )
 
     val_config = MultiInstrumentDatasetConfig(
@@ -148,15 +147,15 @@ model = create_regression_model(feature_cols=feature_cols, d_model=R_D_MODEL, nu
 model = compile_model_lightweight(model=model, updelta=6.0, downdelta=-1.0)
 
 
-early_stopping = EarlyStopping(monitor='val_metric_1', 
+early_stopping = EarlyStopping(monitor='val_loss', 
                                patience=10,
-                               mode='max', 
+                               mode='min', 
                                verbose=1)
 
 model_checkpoint = ModelCheckpoint('models/regressor.keras', 
-                                   monitor='val_metric_1', 
+                                   monitor='val_loss', 
                                    save_best_only=True, 
-                                   mode='max', 
+                                   mode='min', 
                                    verbose=1)
 
 gradient_monitor = GradientAndWeightMonitor(

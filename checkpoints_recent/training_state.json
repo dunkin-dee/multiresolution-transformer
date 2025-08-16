@@ -1,0 +1,12 @@
+{
+  "current_epoch": 11,
+  "global_step": 36696,
+  "best_val_loss": 0.691404402256012,
+  "early_stopping_patience_count": 10,
+  "epoch_durations": [
+    712.664846,
+    716.241391,
+    719.850073
+  ],
+  "timestamp": "2025-07-13T13:49:43.926985"
+}

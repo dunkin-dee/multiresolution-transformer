@@ -20,7 +20,6 @@ from constants.global_constants import FEATURES, NUM_TOKENS, OTHER_TOKENS, BATCH
 
 
 instruments = os.listdir(working_path)
-instruments = ['SILVER#']
 feature_cols = FEATURES
 
 def get_datasets_and_steps(instruments=instruments, working_path=working_path, feature_cols=feature_cols):
@@ -60,10 +59,12 @@ def get_datasets_and_steps(instruments=instruments, working_path=working_path, f
         shuffle_data=True,
         feature_columns=feature_cols,
         max_chunks_per_instrument=25,
-        add_noise_5min=False,        # Enable noise for 5-minute data
-        add_noise_hourly=True,     # Disable noise for hourly data
-        noise_std_hourly=0.015,      # Noise std for hourly (not used since disabled)
-        noise_probability_hourly=0.7 # 100% chance when enabled (not used since disabled)
+        add_noise_5min=True,        
+        add_noise_hourly=True,     
+        noise_std_5min=0.01,  
+        noise_std_hourly=0.015,    
+        noise_probability_5min=0.8,
+        noise_probability_hourly=0.8
     )
 
     val_config = MultiInstrumentDatasetConfig(
@@ -119,7 +120,7 @@ def compile_model_lightweight(model, updelta, downdelta):
     Streamlined compilation with only the most important metrics
     Mixed precision compatible.
     """
-    lr_schedule = WarmupCosineDecay(initial_lr=1e-4, warmup_steps=train_steps*2, decay_steps=train_steps*40)
+    lr_schedule = WarmupCosineDecay(initial_lr=5e-5, warmup_steps=train_steps*2, decay_steps=train_steps*40)
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=lr_schedule, clipnorm=0.5, weight_decay=1e-4),
         loss={
@@ -211,7 +212,7 @@ def get_naive_baseline_metrics(val_dataset, val_steps):
         'total_samples': len(all_target_highs)
     }
 
-# print(get_naive_baseline_metrics(val_dataset, val_steps))
+print(get_naive_baseline_metrics(val_dataset, val_steps))
 
 history = model.fit(
     train_dataset,
@@ -219,6 +220,5 @@ history = model.fit(
     steps_per_epoch=train_steps,
     validation_data=val_dataset,
     validation_steps=val_steps,
-    # callbacks=[early_stopping, model_checkpoint, gradient_monitor, branch_monitor]
-    callbacks=[early_stopping, model_checkpoint]
+    callbacks=[early_stopping, model_checkpoint, gradient_monitor, branch_monitor]
 )

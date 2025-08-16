@@ -67,26 +67,45 @@ class MultiInstrumentDatasetConfig:
 
 
 def add_gaussian_noise(data: np.ndarray, noise_std: float, probability: float = 1.0, 
-                      clip_range: Tuple[float, float] = (0.0, 1.0)) -> np.ndarray:
+                      clip_range: Tuple[float, float] = (0.0, 1.0),
+                      gradient_axis: int = 0, min_noise_factor: float = 0.0) -> np.ndarray:
     """
-    Add Gaussian noise to data with optional probability and clipping.
+    Add Gaussian noise to data with gradient intensity and optional probability and clipping.
     
     Args:
         data: Input data array
-        noise_std: Standard deviation of Gaussian noise
+        noise_std: Standard deviation of Gaussian noise at maximum intensity
         probability: Probability of adding noise (0.0 to 1.0)
         clip_range: Range to clip values after adding noise
+        gradient_axis: Axis along which to apply the noise gradient (0 for rows, 1 for columns)
+        min_noise_factor: Minimum noise factor (0.0 = no noise at end, 1.0 = full noise at end)
         
     Returns:
-        Data with noise added (if applied)
+        Data with gradient noise added (if applied)
     """
     if noise_std <= 0 or np.random.random() > probability:
         return data
     
-    noise = np.random.normal(0, noise_std, data.shape).astype(data.dtype)
-    noisy_data = data + noise
+    # Create gradient multiplier based on position along specified axis
+    axis_length = data.shape[gradient_axis]
     
-    # Clip to valid range since data is scaled 0-1
+    # Linear decay from 1.0 to min_noise_factor
+    gradient = np.linspace(1.0, min_noise_factor, axis_length)
+    
+    # Reshape gradient to broadcast correctly along the specified axis
+    gradient_shape = [1] * data.ndim
+    gradient_shape[gradient_axis] = axis_length
+    gradient = gradient.reshape(gradient_shape)
+    
+    # Generate base noise
+    base_noise = np.random.normal(0, noise_std, data.shape).astype(data.dtype)
+    
+    # Apply gradient to noise
+    scaled_noise = base_noise * gradient
+    
+    noisy_data = data + scaled_noise
+    
+    # Clip to valid range
     return np.clip(noisy_data, clip_range[0], clip_range[1])
 
 

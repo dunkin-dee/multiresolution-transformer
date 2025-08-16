@@ -212,6 +212,7 @@ def create_regression_model(input_shape=(64, 5), other_input_shape=(64, 5),
     # 2. Partial hour data second (current hour context, hourly-normalized, now scaled)
     # 3. 5-minute data last (immediate high-resolution context, now scaled)
     x = concatenate([hourly_scaled, partial_scaled, minute_scaled], axis=1, name='multi_resolution_concat')
+    # x = concatenate([h, p, x], axis=1, name='multi_resolution_concat')
     x = Dropout(0.1)(x)
 
     # Multi-layer transformer with progressive stochastic depth

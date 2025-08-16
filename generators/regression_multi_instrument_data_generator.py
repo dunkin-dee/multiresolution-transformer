@@ -297,6 +297,7 @@ class MultiInstrumentDataGenerator:
         # Build simple global indices: (instrument_idx, chunk_idx, row_idx)
         self.global_indices: List[Tuple[int, int, int]] = []
         self._build_global_indices()
+        self.loop_counter = 0
 
     def _build_global_indices(self):
         """Build global indices across all instruments"""
@@ -393,6 +394,8 @@ class MultiInstrumentDataGenerator:
                     }
                 )
             
+            self.loop_counter += 1
+
             break  # Remove for infinite epochs
 
     

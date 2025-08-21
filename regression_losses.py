@@ -1,40 +1,78 @@
 import tensorflow as tf
 from tensorflow.keras import backend as K
 
-# Updated losses for individual outputs (target_high or target_low separately)
-def asymmetric_huber_loss_single(delta=1.0, underestimate_weight=1.5, overestimate_weight=0.8):
+# # Updated losses for individual outputs (target_high or target_low separately)
+# def asymmetric_huber_loss_single(delta=1.0, underestimate_weight=1.5, overestimate_weight=0.8):
+#     """
+#     Asymmetric Huber loss for individual outputs (either target_high or target_low)
+#     - For target_high: penalize underestimation more (missing profit opportunities)
+#     - For target_low: penalize overestimation more (false risk signals)
+#     Mixed precision compatible.
+#     """
+#     def loss(y_true, y_pred):
+#         y_true = tf.reshape(y_true, [-1])  # Force 1D
+#         y_pred = tf.reshape(y_pred, [-1])
+#         # Ensure float32 for loss computation
+#         y_true = tf.cast(y_true, tf.float32)
+#         y_pred = tf.cast(y_pred, tf.float32)
+        
+#         # Cast delta to float32 first
+#         delta_f32 = tf.cast(delta, tf.float32)
+#         underestimate_weight_f32 = tf.cast(underestimate_weight, tf.float32)
+#         overestimate_weight_f32 = tf.cast(overestimate_weight, tf.float32)
+        
+#         error = y_true - y_pred
+        
+#         # Separate positive and negative errors
+#         pos_mask = tf.cast(error >= 0, tf.float32)  # underestimation (y_true > y_pred)
+#         neg_mask = tf.cast(error < 0, tf.float32)   # overestimation (y_true < y_pred)
+        
+#         # Huber loss components
+#         huber_loss = tf.where(
+#             tf.abs(error) <= delta_f32,
+#             0.5 * tf.square(error),
+#             delta_f32 * (tf.abs(error) - 0.5 * delta_f32)
+#         )
+        
+#         # Apply asymmetric weights
+#         weighted_loss = (pos_mask * underestimate_weight_f32 + neg_mask * overestimate_weight_f32) * huber_loss
+        
+#         return tf.cast(tf.reduce_mean(weighted_loss), tf.float32)
+    
+#     return loss
+
+def asymmetric_huber_loss_single(delta=1.0, underestimate_weight=1.5, overestimate_weight=0.8, max_error=50.0):
     """
-    Asymmetric Huber loss for individual outputs (either target_high or target_low)
-    - For target_high: penalize underestimation more (missing profit opportunities)
-    - For target_low: penalize overestimation more (false risk signals)
-    Mixed precision compatible.
+    Robust asymmetric Huber loss that prevents gradient explosion
+    - Clips extreme errors to prevent wild predictions from breaking training
+    - Mixed precision compatible
     """
     def loss(y_true, y_pred):
-        y_true = tf.reshape(y_true, [-1])  # Force 1D
+        y_true = tf.reshape(y_true, [-1])
         y_pred = tf.reshape(y_pred, [-1])
-        # Ensure float32 for loss computation
         y_true = tf.cast(y_true, tf.float32)
         y_pred = tf.cast(y_pred, tf.float32)
         
-        # Cast delta to float32 first
         delta_f32 = tf.cast(delta, tf.float32)
         underestimate_weight_f32 = tf.cast(underestimate_weight, tf.float32)
         overestimate_weight_f32 = tf.cast(overestimate_weight, tf.float32)
+        max_error_f32 = tf.cast(max_error, tf.float32)
         
         error = y_true - y_pred
         
-        # Separate positive and negative errors
-        pos_mask = tf.cast(error >= 0, tf.float32)  # underestimation (y_true > y_pred)
-        neg_mask = tf.cast(error < 0, tf.float32)   # overestimation (y_true < y_pred)
+        # CRITICAL FIX: Clip extreme errors
+        # This prevents exploding gradients when model makes wild predictions
+        error = tf.clip_by_value(error, -max_error_f32, max_error_f32)
         
-        # Huber loss components
+        pos_mask = tf.cast(error >= 0, tf.float32)
+        neg_mask = tf.cast(error < 0, tf.float32)
+        
         huber_loss = tf.where(
             tf.abs(error) <= delta_f32,
             0.5 * tf.square(error),
             delta_f32 * (tf.abs(error) - 0.5 * delta_f32)
         )
         
-        # Apply asymmetric weights
         weighted_loss = (pos_mask * underestimate_weight_f32 + neg_mask * overestimate_weight_f32) * huber_loss
         
         return tf.cast(tf.reduce_mean(weighted_loss), tf.float32)

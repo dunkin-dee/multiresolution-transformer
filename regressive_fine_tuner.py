@@ -11,15 +11,17 @@ from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 from gradient_monitor import GradientAndWeightMonitor, BranchScalingMonitor
 
 
-starting_dir = "data/final_data"
-working_path = "data/experimenting"
+instrument = 'USDJPY#'
+
+
+working_path = "data/regression_final"
 
 import os
 from generators.regression_multi_instrument_data_generator import InstrumentConfig, MultiInstrumentDatasetConfig, create_multi_instrument_dataset
 from constants.global_constants import FEATURES, NUM_TOKENS, OTHER_TOKENS, BATCH_SIZE, LOOKBACK_WINDOW
 
 
-instruments = os.listdir(working_path)
+instruments = [instrument]
 feature_cols = FEATURES
 
 def get_datasets_and_steps(instruments=instruments, working_path=working_path, feature_cols=feature_cols):
@@ -120,18 +122,22 @@ def compile_model_lightweight(model, updelta, downdelta):
     Streamlined compilation with only the most important metrics
     Mixed precision compatible.
     """
-    lr_schedule = WarmupCosineDecay(initial_lr=1e-5, warmup_steps=train_steps*2, decay_steps=train_steps*40)
+    lr_schedule = WarmupCosineDecay(initial_lr=1e-8, warmup_steps=train_steps*2, decay_steps=train_steps*40)
     model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=lr_schedule, weight_decay=1e-4),
+        optimizer=tf.keras.optimizers.Adam(lr_schedule, weight_decay=1e-10),
         loss={
-            'target_high': 'mae'
+            'target_high': asymmetric_huber_loss_single(
+                delta=2.5, 
+                underestimate_weight=3.2, 
+                overestimate_weight=0.6
+            )
         },
         metrics={
             'target_high': [
                 'mae',
                 'mse',
-                # profit_precision_metric(threshold=6.0),
-                # profit_recall_metric(threshold=6.0),
+                profit_precision_metric(threshold=6.0),
+                profit_recall_metric(threshold=6.0),
             ]
         }
     )
@@ -140,29 +146,25 @@ def compile_model_lightweight(model, updelta, downdelta):
 
 model = create_regression_model(feature_cols=feature_cols, d_model=R_D_MODEL, num_heads=R_NUM_HEADS, ff_dim=R_FF_DIM,
                                 num_tokens=NUM_TOKENS, other_tokens=OTHER_TOKENS)
+model.load_weights('models/regressor.keras')
 model = compile_model_lightweight(model=model, updelta=6.0, downdelta=-1.0)
 
 
-early_stopping = EarlyStopping(monitor='val_loss', 
+early_stopping = EarlyStopping(monitor='val_metric', 
                                patience=10,
-                               mode='min', 
+                               mode='max', 
                                verbose=1)
 
-model_checkpoint = ModelCheckpoint('models/regressor.keras', 
-                                   monitor='val_loss', 
+model_checkpoint = ModelCheckpoint(f'models/regressor_{instrument}.keras', 
+                                   monitor='val_metric', 
                                    save_best_only=True, 
-                                   mode='min', 
+                                   mode='max', 
                                    verbose=1)
 
 gradient_monitor = GradientAndWeightMonitor(
     log_frequency=1,           # Check every epoch
     gradient_threshold=10.0,   # Alert if gradient norm > 10
     weight_threshold=100.0     # Alert if any layer weight norm > 100
-)
-
-branch_monitor = BranchScalingMonitor(
-    log_frequency=1,    # Print weights every 5 epochs
-    save_history=True   # Save history for potential plotting
 )
 
 def get_naive_baseline_metrics(val_dataset, val_steps):
@@ -210,11 +212,15 @@ def get_naive_baseline_metrics(val_dataset, val_steps):
 
 print(get_naive_baseline_metrics(val_dataset, val_steps))
 
+
 history = model.fit(
     train_dataset,
     epochs=50,
     steps_per_epoch=train_steps,
     validation_data=val_dataset,
     validation_steps=val_steps,
-    callbacks=[early_stopping, model_checkpoint, gradient_monitor, branch_monitor]
+    callbacks=[early_stopping, model_checkpoint, gradient_monitor]
 )
+
+model.load_weights(f'models/regressor_{instrument}.keras')
+model.evaluate(test_dataset, steps=test_steps)

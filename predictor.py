@@ -6,7 +6,7 @@ import tensorflow as tf
 from constants.global_constants import NORMALIZING_WINDOW_SIZE, FEATURES, NUM_TOKENS, OTHER_TOKENS
 from working_data import normalize_by_window, add_timing
 import json
-from modeler import create_model
+# from modeler import create_model
 from datetime import datetime, timedelta
 
 
@@ -153,13 +153,13 @@ def get_inference_data(main_path, hourly_path, main_lookback_tokens, hourly_look
     return main_input, hourly_input
 
 
-model = create_model(training=False)
+# model = create_model(training=False)
 
 for instrument in instruments:
     print(f"Processing {instrument}...")
 
-    main_path = os.path.join(base_win_path, 'data', instrument, 'five_minutes.csv')
-    hourly_path = os.path.join(base_win_path, 'data', instrument, 'hours.csv')
+    main_path = os.path.join(base_win_path, 'checking_data', instrument, 'five_minutes.csv')
+    hourly_path = os.path.join(base_win_path, 'checking_data', instrument, 'hours.csv')
     
 
     # main_input, hourly_input = get_inference_data(
@@ -183,8 +183,10 @@ for instrument in instruments:
     # if main_input is None or hourly_input is None:
     #     continue
     
-    model.load_weights(f"models/{instrument}/middle/up/best_model.weights.h5")
+    # model.load_weights(f"models/{instrument}/middle/up/best_model.weights.h5")
     for i in range(len(main_inputs)):
+
+        print(cns[i])
         main_input = main_inputs[i]
         hourly_input = hourly_inputs[i]
         if candles[i] < 0:
@@ -193,6 +195,7 @@ for instrument in instruments:
             continue
         if times[i].hour < 10 or times[i].hour > 18:
             continue
+        continue
         prediction = model.predict([main_input, hourly_input], verbose=0)
         if prediction[0][0] > 0.5:
             print(prediction, instrument)

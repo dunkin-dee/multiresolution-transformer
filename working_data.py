@@ -592,6 +592,16 @@ def alt_label_df(df,
     df = df.drop(columns=['candle'])
     return df.iloc[:len(df) - window_size].copy()
 
+def regression_label_df_next(df):
+    df = df.copy()
+    df = df.reset_index(drop=True)
+    df['target_high'] = df['close_normalized_for_label'].shift(-1)
+    df['target_low'] = df['close_normalized_for_label'].shift(-1)
+    df['include'] = 1
+
+    return df
+
+
 def regression_label_df(df, 
                  window_size=60, 
                  positive_slope=0.4, 

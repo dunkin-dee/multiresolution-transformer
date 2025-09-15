@@ -129,13 +129,13 @@ def create_regression_model(input_shape=(64, 5), other_input_shape=(64, 5),
     
     # Process 5-minute data branch (high-resolution, 5-min normalized)
     x = cnn_feature_extractor(input_layer, '5min', d_model-16)
-    x = Dense(d_model - 16, kernel_regularizer=l2(5e-4), name='5min_projection')(x)
+    x = Dense(d_model - 16, name='5min_projection')(x)
     x = LearnablePositionalEncoding(max_seq_len=num_tokens, embed_dim=d_model-16)(x)
     x = AddTypeEmbedding(type_id=0, embed_dim=16, name='5min_type_embed')(x)
 
     # Process complete hourly data branch (hourly normalized)
     h = cnn_feature_extractor(other_input_layer, 'hourly', d_model-16)
-    h = Dense(d_model - 16, kernel_regularizer=l2(5e-4), name='hourly_projection')(h)
+    h = Dense(d_model - 16, name='hourly_projection')(h)
     h = LearnablePositionalEncoding(max_seq_len=other_tokens, embed_dim=d_model-16)(h)
     h = AddTypeEmbedding(type_id=1, embed_dim=16, name='hourly_type_embed')(h)
     # Process partial hour data branch (single token, hourly normalized, with temporal context)
@@ -189,11 +189,11 @@ def create_regression_model(input_shape=(64, 5), other_input_shape=(64, 5),
     combined_features = concatenate([avg_pool, max_pool, attention_pool], name='combined_features')
 
     # Shared representation learning
-    shared_dense = Dense(d_model, activation='relu', kernel_regularizer=l2(1e-3), name='shared_dense')(combined_features)
+    shared_dense = Dense(d_model, activation='relu', name='shared_dense')(combined_features)
     
     # Task-specific prediction heads
     high_dense = Dense(d_model // 2, activation='relu', name='high_dense')(shared_dense)
-    target_high = Dense(1, activation='linear', kernel_regularizer=l2(1e-3), name='target_high')(high_dense)
+    target_high = Dense(1, activation='linear', name='target_high')(high_dense)
     
     
     model = Model(

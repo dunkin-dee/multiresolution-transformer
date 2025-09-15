@@ -29,7 +29,8 @@ for instrument in instruments:
             'low',
             'close'
         ],
-        label_cols=['open', 'close'])
+        label_cols=['open', 'close'],
+        keep_normalization_params=True)
 
     hour_df = pd.read_csv(f"{starting_dir}/{instrument}/hours.csv")
     print(f"  Hour Original data: {len(hour_df)} rows")
@@ -54,12 +55,6 @@ for instrument in instruments:
     df = normalize_partial_hour(df, hour_df)
 
     print(f"Labeling...\n\n\n")
-    # df = regression_label_df(df, window_size=REGRESSION_LABELING_WINDOW_SIZE, 
-    #                 positive_slope=POSITIVE_SLOPE, 
-    #                 negative_slope=NEGATIVE_SLOPE,
-    #                 starting_hour=9,
-    #                 ending_hour=18,
-    #                 lookback_window=LABEL_LOOKBACK)
     df = regression_label_df_next(df)
 
 
@@ -86,5 +81,8 @@ for instrument in instruments:
                                     'partial_close_normalized',
                                     'include',
                                     'target_high',
-                                    'target_low'
+                                    'target_low',
+                                    'norm_window_min',
+                                    'norm_window_max',
+                                    'close',
                                 ])

@@ -6,7 +6,6 @@ import logging
 from pathlib import Path
 from typing import List, Tuple, Generator, Optional, Dict, Any
 from dataclasses import dataclass
-from abc import ABC, abstractmethod
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -37,13 +36,12 @@ class MultiInstrumentDatasetConfig:
     feature_columns: List[str] = None
     max_chunks_per_instrument: int = 20
     
-    # NEW: Noise parameters - independent control for 5-minute and hourly data
-    add_noise_5min: bool = False  # Enable/disable noise for 5-minute data
-    add_noise_hourly: bool = False  # Enable/disable noise for hourly data
-    noise_std_5min: float = 0.01  # Standard deviation for 5-minute data noise
-    noise_std_hourly: float = 0.01  # Standard deviation for hourly data noise
-    noise_probability_5min: float = 1.0  # Probability of adding noise to 5-minute data (0.0 to 1.0)
-    noise_probability_hourly: float = 1.0  # Probability of adding noise to hourly data (0.0 to 1.0)
+    add_noise_5min: bool = False
+    add_noise_hourly: bool = False
+    noise_std_5min: float = 0.01
+    noise_std_hourly: float = 0.01
+    noise_probability_5min: float = 1.0
+    noise_probability_hourly: float = 1.0
     
     def __post_init__(self):
         if self.feature_columns is None:
@@ -146,7 +144,8 @@ class InstrumentChunkManager:
             'include', 'time', 'target_high', 'target_low',
             'partial_open_normalized', 'partial_high_normalized', 
             'partial_low_normalized', 'partial_close_normalized',
-            'position_in_hour', 'partial_hour_length'
+            'position_in_hour', 'partial_hour_length', 'norm_window_min',
+            'norm_window_max', 'close'
         ]))
         
         try:
@@ -283,8 +282,16 @@ class SingleInstrumentProcessor:
             # Extract temporal context
             minutes_into_hour = np.array([chunk_df[row_idx, 'position_in_hour']], dtype=np.float32)
             partial_hour_length = np.array([chunk_df[row_idx, 'partial_hour_length']], dtype=np.float32)
+
+            norm_min = np.array([chunk_df[row_idx, 'norm_window_min']], dtype=np.float32)
+            norm_max = np.array([chunk_df[row_idx, 'norm_window_max']], dtype=np.float32)
             
-            return main_input, hourly_sequence, target_values, partial_hour_data, minutes_into_hour, partial_hour_length
+            # Extract original close for random walk baseline
+            original_close = np.array([chunk_df[row_idx, 'close']], dtype=np.float32)
+            
+            return (main_input, hourly_sequence, target_values, partial_hour_data, 
+                    minutes_into_hour, partial_hour_length, norm_min, norm_max, original_close)
+            
         
         except Exception as e:
             logger.error(f"Error extracting sample for {self.instrument_config.name} ({chunk_idx}, {row_idx}): {e}")
@@ -354,6 +361,9 @@ class MultiInstrumentDataGenerator:
             batch_partial = np.empty((self.config.batch_size, 1, 4), dtype=np.float32)  # 5 partial columns
             batch_minutes = np.empty((self.config.batch_size, 1), dtype=np.float32)
             batch_length = np.empty((self.config.batch_size, 1), dtype=np.float32)
+            batch_norm_min = np.empty((self.config.batch_size, 1), dtype=np.float32)
+            batch_norm_max = np.empty((self.config.batch_size, 1), dtype=np.float32)
+            batch_original_close = np.empty((self.config.batch_size, 1), dtype=np.float32)
             
             batch_idx = 0
             samples_processed = 0
@@ -367,7 +377,8 @@ class MultiInstrumentDataGenerator:
                         continue
                     
                     # UPDATED: Unpack additional data
-                    main_seq, hourly_seq, targets, partial_data, minutes, length = sample_data
+                    (main_seq, hourly_seq, targets, partial_data, minutes, length, 
+                    norm_min, norm_max, original_close) = sample_data
                     
                     batch_main[batch_idx] = main_seq
                     batch_hourly[batch_idx] = hourly_seq
@@ -376,6 +387,9 @@ class MultiInstrumentDataGenerator:
                     batch_partial[batch_idx] = partial_data
                     batch_minutes[batch_idx] = minutes
                     batch_length[batch_idx] = length
+                    batch_norm_min[batch_idx] = norm_min
+                    batch_norm_max[batch_idx] = norm_max
+                    batch_original_close[batch_idx] = original_close
                     batch_idx += 1
                     samples_processed += 1
                     
@@ -388,10 +402,12 @@ class MultiInstrumentDataGenerator:
                             tf.convert_to_tensor(batch_minutes, dtype=tf.float32),
                             tf.convert_to_tensor(batch_length, dtype=tf.float32),
                             {
-                                'target_high': tf.convert_to_tensor(batch_targets[:, 0], dtype=tf.float32),
-                                # 'target_low': tf.convert_to_tensor(batch_targets[:, 1], dtype=tf.float32)
-                            }
-                        )
+                            'target_high': tf.convert_to_tensor(batch_targets[:, 0], dtype=tf.float32),
+                            'norm_min': tf.convert_to_tensor(batch_norm_min[:, 0], dtype=tf.float32),
+                            'norm_max': tf.convert_to_tensor(batch_norm_max[:, 0], dtype=tf.float32),
+                            'original_close': tf.convert_to_tensor(batch_original_close[:, 0], dtype=tf.float32),
+                        }
+                    )
                         batch_idx = 0
                 
                 except Exception as e:
@@ -408,8 +424,10 @@ class MultiInstrumentDataGenerator:
                     tf.convert_to_tensor(batch_minutes[:batch_idx], dtype=tf.float32),
                     tf.convert_to_tensor(batch_length[:batch_idx], dtype=tf.float32),
                     {
-                        'target_high': tf.convert_to_tensor(batch_targets[:batch_idx, 0], dtype=tf.float32),
-                        # 'target_low': tf.convert_to_tensor(batch_targets[:batch_idx, 1], dtype=tf.float32)
+                        'target_high': tf.convert_to_tensor(batch_targets[:, 0], dtype=tf.float32),
+                        'norm_min': tf.convert_to_tensor(batch_norm_min, dtype=tf.float32),
+                        'norm_max': tf.convert_to_tensor(batch_norm_max, dtype=tf.float32),
+                        'original_close': tf.convert_to_tensor(batch_original_close, dtype=tf.float32),
                     }
                 )
             
@@ -455,12 +473,14 @@ def create_multi_instrument_dataset(config: MultiInstrumentDatasetConfig, repeat
         output_signature=(
             tf.TensorSpec(shape=(None, config.main_lookback_tokens, len(config.feature_columns)), dtype=tf.float32),
             tf.TensorSpec(shape=(None, config.hourly_lookback_tokens, len(config.feature_columns)), dtype=tf.float32),
-            tf.TensorSpec(shape=(None, 1, 4), dtype=tf.float32),  # NEW: partial hour data
-            tf.TensorSpec(shape=(None, 1), dtype=tf.float32),     # NEW: minutes into hour
-            tf.TensorSpec(shape=(None, 1), dtype=tf.float32),     # NEW: partial hour length
+            tf.TensorSpec(shape=(None, 1, 4), dtype=tf.float32),
+            tf.TensorSpec(shape=(None, 1), dtype=tf.float32),
+            tf.TensorSpec(shape=(None, 1), dtype=tf.float32),
             {
                 'target_high': tf.TensorSpec(shape=(None,), dtype=tf.float32),
-                # 'target_low': tf.TensorSpec(shape=(None,), dtype=tf.float32)
+                'norm_min': tf.TensorSpec(shape=(None,), dtype=tf.float32),      # NEW
+                'norm_max': tf.TensorSpec(shape=(None,), dtype=tf.float32),      # NEW
+                'original_close': tf.TensorSpec(shape=(None,), dtype=tf.float32), # NEW
             }
         )
     )

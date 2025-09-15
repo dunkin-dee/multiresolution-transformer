@@ -357,7 +357,8 @@ def normalize_by_window(
             'low',
             'close'],
         label_cols=[],
-        add_partial_hour=False):
+        add_partial_hour=False,
+        keep_normalization_params=True):
     """
     Normalize columns by rolling window min/max values.
     
@@ -418,6 +419,11 @@ def normalize_by_window(
     for normalizing_col in normalizing_cols:
         df[f"{normalizing_col}_normalized"] = (df[normalizing_col] - df['window_min'])/(df['window_max'] - df['window_min'])
 
+    if keep_normalization_params:
+        # Keep these for denormalization later
+        df['norm_window_min'] = df['window_min']
+        df['norm_window_max'] = df['window_max']
+
     # Handle label normalization only if label_cols is not empty
     if label_cols:
         df['window_max_prev'] = df['window_max'].shift(1)
@@ -428,7 +434,6 @@ def normalize_by_window(
         
         df.drop(columns=['window_max_prev', 'window_min_prev'], inplace=True)
 
-    # df.drop(columns=['window_max', 'window_min'], inplace=True)
     return df[window_size:]
 
 def normalize_by_window_v2(

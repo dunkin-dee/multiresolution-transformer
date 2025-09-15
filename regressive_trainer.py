@@ -122,9 +122,9 @@ def compile_model_lightweight(model, updelta, downdelta):
     """
     lr_schedule = WarmupCosineDecay(initial_lr=1e-5, warmup_steps=train_steps*2, decay_steps=train_steps*40)
     model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=lr_schedule, weight_decay=1e-4),
+        optimizer=tf.keras.optimizers.Adam(learning_rate=lr_schedule),
         loss={
-            'target_high': 'mae'
+            'target_high': 'mse'
         },
         metrics={
             'target_high': [
@@ -143,13 +143,13 @@ model = create_regression_model(feature_cols=feature_cols, d_model=R_D_MODEL, nu
 model = compile_model_lightweight(model=model, updelta=6.0, downdelta=-1.0)
 
 
-early_stopping = EarlyStopping(monitor='val_loss', 
+early_stopping = EarlyStopping(monitor='val_mse', 
                                patience=10,
                                mode='min', 
                                verbose=1)
 
 model_checkpoint = ModelCheckpoint('models/regressor.keras', 
-                                   monitor='val_loss', 
+                                   monitor='val_mse', 
                                    save_best_only=True, 
                                    mode='min', 
                                    verbose=1)
@@ -165,50 +165,6 @@ branch_monitor = BranchScalingMonitor(
     save_history=True   # Save history for potential plotting
 )
 
-def get_naive_baseline_metrics(val_dataset, val_steps):
-    """
-    Calculate naive baseline metrics for both target_high and target_low predictions.
-    Uses mean prediction as the naive baseline for each target.
-    
-    Args:
-        val_dataset: TensorFlow dataset from create_multi_instrument_dataset
-        val_steps: Number of validation steps/batches to process
-        
-    Returns:
-        dict: Contains metrics for both target_high and target_low
-              Each target has: baseline_value, mae, mse, rmse
-    """
-    # Collect all target values
-    all_target_highs = []
-    # all_target_lows = []
-    
-    for i, batch in enumerate(val_dataset):
-        if i >= val_steps:
-            break
-        (main_input, hourly_input, partial, position, hourly_position), targets = batch
-        
-        target_highs = targets['target_high'].numpy()        
-        all_target_highs.extend(target_highs)
-    
-    all_target_highs = np.array(all_target_highs)
-    baseline_high = np.mean(all_target_highs)
-    predictions_high = np.full_like(all_target_highs, baseline_high)
-    mae_high = np.mean(np.abs(predictions_high - all_target_highs))
-    mse_high = np.mean((predictions_high - all_target_highs) ** 2)
-    rmse_high = np.sqrt(mse_high)
-    
-    
-    return {
-        'target_high': {
-            'baseline_value': baseline_high,
-            'mae': mae_high,
-            'mse': mse_high,
-            'rmse': rmse_high
-        },
-        'total_samples': len(all_target_highs)
-    }
-
-print(get_naive_baseline_metrics(val_dataset, val_steps))
 
 history = model.fit(
     train_dataset,
@@ -218,3 +174,7 @@ history = model.fit(
     validation_steps=val_steps,
     callbacks=[early_stopping, model_checkpoint, gradient_monitor, branch_monitor]
 )
+
+model.load_weights('models/regressor.keras')
+
+predictions = model.predict(test_dataset, steps=test_steps)

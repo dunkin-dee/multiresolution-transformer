@@ -353,16 +353,14 @@ def evaluate_with_denormalization_matching_keras(model, test_dataset, test_steps
     return results
 
 
-clean_test_dataset = val_dataset.map(filter_targets_for_training)
+# clean_test_dataset = val_dataset.map(filter_targets_for_training)
 
 
-model.evaluate(clean_test_dataset, steps=val_steps)
+# model.evaluate(clean_test_dataset, steps=val_steps)
 
 (train_dataset, val_dataset, test_dataset), (train_steps, val_steps, test_steps) = get_datasets_and_steps()
 
 evaluate_with_denormalization_matching_keras(model, val_dataset, val_steps)
 
-(train_dataset, val_dataset, test_dataset), (train_steps, val_steps, test_steps) = get_datasets_and_steps()
-model.evaluate(clean_test_dataset, steps=val_steps)
-
-
+# (train_dataset, val_dataset, test_dataset), (train_steps, val_steps, test_steps) = get_datasets_and_steps()
+# model.evaluate(clean_test_dataset, steps=val_steps)

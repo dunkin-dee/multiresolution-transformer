@@ -4,10 +4,10 @@ import json
 import pickle
 from datetime import datetime, time
 from tensorflow.keras.callbacks import Callback
-from losses import precision_focused_balanced_loss
-from datasets import get_datasets_and_steps
-from transformer_builder import WarmupCosineDecay
-from modeler import create_model
+from classification.losses import precision_focused_balanced_loss
+from classification.datasets import get_datasets_and_steps
+from core.transformer_builder import WarmupCosineDecay
+from core.modeler import create_model
 from constants.global_constants import LR, WARMUP, DECAY
 
 class TimeBasedTrainingManager:

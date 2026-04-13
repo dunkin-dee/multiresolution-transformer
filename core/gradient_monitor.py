@@ -1,7 +1,7 @@
 import tensorflow as tf
 import numpy as np
 from tensorflow.keras.callbacks import Callback
-from modeler import ScalarScale
+from core.modeler import ScalarScale
 
 class GradientAndWeightMonitor(Callback):
     """

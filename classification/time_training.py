@@ -1,3 +1,7 @@
+# NON-FUNCTIONAL LEGACY FILE
+# Imports from 'model_builder_trans' (missing) and bare 'multi_instrument_data_generator' (wrong path).
+# Kept for reference only. Do not attempt to run.
+
 import datetime
 import os
 import tensorflow as tf

@@ -1,13 +1,13 @@
 from constants.global_constants import *
 import tensorflow as tf
-from transformer_builder import LearnablePositionalEncoding, StochasticGatedTransformerBlock, AddTypeEmbedding, AttentionPooling
+from core.transformer_builder import LearnablePositionalEncoding, StochasticGatedTransformerBlock, AddTypeEmbedding, AttentionPooling
 from tensorflow.keras.layers import Input, Conv1D,  Dense, concatenate, Dropout, Layer, GlobalAveragePooling1D, GlobalMaxPooling1D, LayerNormalization, Add, Lambda
 from tensorflow.keras.models import Model
 from keras.ops import sin, cos, concatenate as keras_concat, expand_dims
 from tensorflow.keras.regularizers import l2
 
 
-
+@tf.keras.utils.register_keras_serializable(package="scalper")
 class ScalarScale(tf.keras.layers.Layer):
     """Trainable scalar scaling layer for branch weighting"""
     def __init__(self, initial_value=1.0, **kwargs):
@@ -24,7 +24,14 @@ class ScalarScale(tf.keras.layers.Layer):
         
     def call(self, inputs):
         return inputs * self.scale
-    
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({'initial_value': self.initial_value})
+        return config
+
+
+@tf.keras.utils.register_keras_serializable(package="scalper")
 class TemporalPreservingDropout(Layer):
     def __init__(self, rate, preserve_last=1, **kwargs):
         super().__init__(**kwargs)
@@ -194,8 +201,10 @@ def create_regression_model(input_shape=(64, 5), other_input_shape=(64, 5),
     # Task-specific prediction heads
     high_dense = Dense(d_model // 2, activation='relu', name='high_dense')(shared_dense)
     target_high = Dense(1, activation='linear', name='target_high')(high_dense)
-    
-    
+
+    low_dense = Dense(d_model // 2, activation='relu', name='low_dense')(shared_dense)
+    target_low = Dense(1, activation='linear', name='target_low')(low_dense)
+
     model = Model(
         inputs=[
             input_layer,           # 5-minute data (5-min normalized)
@@ -203,8 +212,8 @@ def create_regression_model(input_shape=(64, 5), other_input_shape=(64, 5),
             partial_hour_layer,    # Partial hour data (hourly normalized)
             minutes_into_hour,     # Temporal context: minutes into current hour
             partial_hour_length    # Temporal context: valid data points in partial hour
-        ], 
-        outputs={'target_high': target_high}
+        ],
+        outputs={'target_high': target_high, 'target_low': target_low}
     )
     
     return model

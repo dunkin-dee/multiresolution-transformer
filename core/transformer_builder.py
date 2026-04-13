@@ -1,6 +1,7 @@
 import tensorflow as tf
 import numpy as np
-from tensorflow.keras.layers import  LayerNormalization, Dropout, Layer, Embedding, Dense
+from tensorflow.keras.layers import LayerNormalization, Dropout, Layer, Embedding, Dense
+
 
 class PositionalEncoding(tf.keras.layers.Layer):
     def __init__(self, maxlen, d_model):
@@ -20,13 +21,15 @@ class PositionalEncoding(tf.keras.layers.Layer):
 
     def call(self, inputs):
         return inputs + self.pos_encoding[:, :tf.shape(inputs)[1], :]
-    
+
+
+@tf.keras.utils.register_keras_serializable(package="scalper")
 class LearnablePositionalEncoding(Layer):
     def __init__(self, max_seq_len, embed_dim, **kwargs):
         super().__init__(**kwargs)
         self.max_seq_len = max_seq_len
         self.embed_dim = embed_dim
-        
+
     def build(self, input_shape):
         self.pos_embedding = self.add_weight(
             name='pos_embedding',
@@ -35,12 +38,12 @@ class LearnablePositionalEncoding(Layer):
             trainable=True
         )
         super().build(input_shape)
-        
+
     def call(self, inputs):
         seq_len = tf.shape(inputs)[1]
         pos_encoding = self.pos_embedding[:seq_len, :]
         return inputs + pos_encoding
-        
+
     def get_config(self):
         config = super().get_config()
         config.update({
@@ -48,9 +51,11 @@ class LearnablePositionalEncoding(Layer):
             'embed_dim': self.embed_dim
         })
         return config
-    
+
+
+@tf.keras.utils.register_keras_serializable(package="scalper")
 class StochasticGatedTransformerBlock(tf.keras.layers.Layer):
-    def __init__(self, embed_dim, num_heads, ff_dim, rate=0.1, 
+    def __init__(self, embed_dim, num_heads, ff_dim, rate=0.1,
                  attention_dropout=0.1, stochastic_depth_rate=0.1, **kwargs):
         super(StochasticGatedTransformerBlock, self).__init__(**kwargs)
         self.embed_dim = embed_dim
@@ -59,31 +64,21 @@ class StochasticGatedTransformerBlock(tf.keras.layers.Layer):
         self.rate = rate
         self.attention_dropout = attention_dropout
         self.stochastic_depth_rate = stochastic_depth_rate
-        
+
     def build(self, input_shape):
-        # Standard multi-head attention from original implementation
         self.att = tf.keras.layers.MultiHeadAttention(
-            num_heads=self.num_heads, 
-            key_dim=self.embed_dim//self.num_heads,  # key_dim is per head
+            num_heads=self.num_heads,
+            key_dim=self.embed_dim//self.num_heads,
             dropout=self.attention_dropout
         )
-        
-        # Gating mechanism for attention with stochastic noise
         self.gate_att = tf.keras.layers.Dense(self.embed_dim, activation='sigmoid')
-        
-        # Feed forward network with gating
         self.ff1 = tf.keras.layers.Dense(self.ff_dim, activation="relu")
         self.ff2 = tf.keras.layers.Dense(self.embed_dim)
         self.gate_ffn = tf.keras.layers.Dense(self.embed_dim, activation='sigmoid')
-        
-        # Normalization and dropout layers
         self.layernorm1 = LayerNormalization(epsilon=1e-6)
         self.layernorm2 = LayerNormalization(epsilon=1e-6)
         self.dropout1 = Dropout(self.rate)
         self.dropout2 = Dropout(self.rate)
-        
-        # Build all sub-layers with the correct input shape
-        # MultiHeadAttention needs query_shape and value_shape (same for self-attention)
         self.att.build(query_shape=input_shape, value_shape=input_shape)
         self.gate_att.build(input_shape)
         self.ff1.build(input_shape)
@@ -91,138 +86,111 @@ class StochasticGatedTransformerBlock(tf.keras.layers.Layer):
         self.gate_ffn.build(input_shape)
         self.layernorm1.build(input_shape)
         self.layernorm2.build(input_shape)
-        
         super().build(input_shape)
 
     def stochastic_depth(self, x, training):
-        """Applies stochastic depth to the input tensor."""
         if not isinstance(training, bool):
             training = tf.cast(training, tf.bool)
-            
-        # Create binary tensor with probability of keeping activations
         keep_prob = 1.0 - self.stochastic_depth_rate
-        
+
         def drop_path():
             batch_size = tf.shape(x)[0]
             random_tensor = keep_prob
             random_tensor += tf.random.uniform([batch_size, 1, 1], dtype=x.dtype)
             binary_tensor = tf.floor(random_tensor)
-            # Scale the activations
             return x * binary_tensor / keep_prob
-            
+
         output = tf.cond(
             tf.logical_and(training, tf.constant(self.stochastic_depth_rate > 0)),
             lambda: drop_path(),
             lambda: x
         )
-        
         return output
 
     def call(self, inputs, training=True):
-        # Convert string 'True' to boolean True if needed
         if isinstance(training, str):
             training = training == 'True'
-            
-        # Handle stochastic depth with tf.cond
+
         def skip_block():
             return inputs
-            
+
         def process_block():
-            # Apply noise during training
             def apply_training_noise():
                 noise_scale = 0.01
-                # Fix: Match the dtype of the input tensor
                 input_noise = tf.random.normal(tf.shape(inputs), stddev=noise_scale, dtype=inputs.dtype)
                 return inputs + input_noise
-                
+
             inputs_with_noise = tf.cond(
                 tf.cast(training, tf.bool),
                 lambda: apply_training_noise(),
                 lambda: inputs
             )
-                
-            # Apply multi-head attention
+
             attn_output = self.att(
-                    query=inputs_with_noise,
-                    key=inputs_with_noise,
-                    value=inputs_with_noise
-                )
-            
-            # Apply gating to attention output
+                query=inputs_with_noise,
+                key=inputs_with_noise,
+                value=inputs_with_noise
+            )
+
             gate_val = self.gate_att(inputs)
-            
-            # Add multiplicative noise to gates during training
+
             def add_gate_noise():
-                # Fix: Match the dtype of the gate values
                 gate_noise = tf.random.normal(tf.shape(gate_val), mean=1.0, stddev=0.1, dtype=gate_val.dtype)
                 return gate_val * gate_noise
-                
+
             gate_val = tf.cond(
                 tf.cast(training, tf.bool),
                 lambda: add_gate_noise(),
                 lambda: gate_val
             )
-                
+
             attn_output = gate_val * attn_output
-            
-            # Apply dropout and add residual connection
             attn_output = self.dropout1(attn_output, training=training)
             out1 = self.layernorm1(inputs + attn_output)
-            
-            # Feed-forward network with gating
+
             ffn_output = self.ff1(out1)
-            
-            # Apply stochastic feature dropout during training
+
             def apply_feature_dropout():
-                # Randomly zero out some features
-                # Fix: Match the dtype of the FFN output
                 feature_mask = tf.cast(
-                    tf.random.uniform(tf.shape(ffn_output)) > 0.1, 
+                    tf.random.uniform(tf.shape(ffn_output)) > 0.1,
                     dtype=ffn_output.dtype
                 )
-                return ffn_output * feature_mask * tf.cast(1.1, dtype=ffn_output.dtype)  # Scale to maintain expected value
-                
+                return ffn_output * feature_mask * tf.cast(1.1, dtype=ffn_output.dtype)
+
             ffn_output = tf.cond(
                 tf.cast(training, tf.bool),
                 lambda: apply_feature_dropout(),
                 lambda: ffn_output
             )
-                
+
             ffn_output = self.ff2(ffn_output)
             gate_val = self.gate_ffn(out1)
-            
-            # Add noise to FFN gates during training
+
             def add_ffn_gate_noise():
-                # Fix: Match the dtype of the gate values
                 gate_noise = tf.random.normal(tf.shape(gate_val), mean=1.0, stddev=0.1, dtype=gate_val.dtype)
                 return gate_val * gate_noise
-                
+
             gate_val = tf.cond(
                 tf.cast(training, tf.bool),
                 lambda: add_ffn_gate_noise(),
                 lambda: gate_val
             )
-                
+
             ffn_output = gate_val * ffn_output
             ffn_output = self.dropout2(ffn_output, training=training)
-            
-            # Apply stochastic depth to the residual connection
             ffn_output = self.stochastic_depth(ffn_output, training)
-            
             return self.layernorm2(out1 + ffn_output)
-        
-        # Use tf.cond for the main block execution decision
-        random_value = tf.random.uniform([], dtype=tf.float32)  # Keep this as float32 for comparison
+
+        random_value = tf.random.uniform([], dtype=tf.float32)
         skip_condition = tf.logical_and(
             tf.cast(training, tf.bool),
             tf.less(random_value, tf.constant(self.stochastic_depth_rate))
         )
-        
         return tf.cond(skip_condition, skip_block, process_block)
-        
+
     def compute_output_shape(self, input_shape):
         return input_shape
-    
+
     def get_config(self):
         config = super().get_config()
         config.update({
@@ -234,83 +202,9 @@ class StochasticGatedTransformerBlock(tf.keras.layers.Layer):
             'stochastic_depth_rate': self.stochastic_depth_rate
         })
         return config
-    
-
-class AddTypeEmbedding(Layer):
-    def __init__(self, type_id, embed_dim=16, **kwargs):
-        super().__init__(**kwargs)
-        self.type_id = type_id
-        self.embed_dim = embed_dim
-        self.embedding_layer = None
-        
-    def build(self, input_shape):
-        self.embedding_layer = Embedding(input_dim=2, output_dim=self.embed_dim, name=f'{self.name}_embed')
-        super().build(input_shape)
-        
-    def call(self, inputs):
-        batch_size = tf.shape(inputs)[0]
-        seq_len = tf.shape(inputs)[1]
-        type_ids = tf.fill((batch_size, seq_len), self.type_id)
-        type_embed = self.embedding_layer(type_ids)
-        return tf.concat([inputs, type_embed], axis=-1)
-        
-    def get_config(self):
-        config = super().get_config()
-        config.update({
-            "type_id": self.type_id,
-            "embed_dim": self.embed_dim
-        })
-        return config
 
 
-class AttentionPooling(Layer):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        
-    def build(self, input_shape):
-        self.attention_dense = Dense(1)  # Remove activation here
-        super().build(input_shape)
-        
-    def call(self, inputs):
-        # inputs shape: (batch_size, seq_len, hidden_dim)
-        attention_logits = self.attention_dense(inputs)  # (batch_size, seq_len, 1)
-        attention_weights = tf.nn.softmax(attention_logits, axis=1)  # Softmax across sequence
-        return tf.reduce_sum(inputs * attention_weights, axis=1)
-        
-    def get_config(self):
-        config = super().get_config()
-        return config
-
-class WarmupCosineDecay(tf.keras.optimizers.schedules.LearningRateSchedule):
-    def __init__(self, initial_lr=5e-5, warmup_steps=120000, decay_steps=900000):
-        super(WarmupCosineDecay, self).__init__()
-        self.initial_lr = initial_lr
-        self.warmup_steps = warmup_steps
-        self.decay_steps = decay_steps
-        
-    def __call__(self, step):
-        # Linear warmup
-        warmup_lr = self.initial_lr * (tf.cast(step, tf.float32) / 
-                                      tf.cast(self.warmup_steps, tf.float32))
-        
-        # Cosine decay
-        cosine_decay = 0.5 * (1 + tf.cos(
-            3.14159 * (tf.cast(step, tf.float32) - self.warmup_steps) / 
-            tf.cast(self.decay_steps - self.warmup_steps, tf.float32)))
-        decay_lr = self.initial_lr * cosine_decay
-        
-        # Use warmup_lr for the first warmup_steps, then decay_lr
-        lr = tf.where(step < self.warmup_steps, warmup_lr, decay_lr)
-        return lr
-    
-    def get_config(self):
-        """Required for serialization when saving the model."""
-        return {
-            "initial_lr": self.initial_lr,
-            "warmup_steps": self.warmup_steps,
-            "decay_steps": self.decay_steps
-        }
-
+@tf.keras.utils.register_keras_serializable(package="scalper")
 class AddTypeEmbedding(Layer):
     def __init__(self, type_id, embed_dim=16, num_types=3, **kwargs):
         super().__init__(**kwargs)
@@ -318,22 +212,22 @@ class AddTypeEmbedding(Layer):
         self.embed_dim = embed_dim
         self.num_types = num_types
         self.embedding_layer = None
-        
+
     def build(self, input_shape):
         self.embedding_layer = Embedding(
-            input_dim=self.num_types, 
-            output_dim=self.embed_dim, 
+            input_dim=self.num_types,
+            output_dim=self.embed_dim,
             name=f'{self.name}_embed'
         )
         super().build(input_shape)
-        
+
     def call(self, inputs):
         batch_size = tf.shape(inputs)[0]
         seq_len = tf.shape(inputs)[1]
         type_ids = tf.fill((batch_size, seq_len), self.type_id)
         type_embed = self.embedding_layer(type_ids)
         return tf.concat([inputs, type_embed], axis=-1)
-        
+
     def get_config(self):
         config = super().get_config()
         config.update({
@@ -343,97 +237,45 @@ class AddTypeEmbedding(Layer):
         })
         return config
 
+
+@tf.keras.utils.register_keras_serializable(package="scalper")
 class AttentionPooling(Layer):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        
+
     def build(self, input_shape):
-        self.attention_dense = Dense(1)  # Remove activation here
+        self.attention_dense = Dense(1)
         super().build(input_shape)
-        
+
     def call(self, inputs):
-        # inputs shape: (batch_size, seq_len, hidden_dim)
-        attention_logits = self.attention_dense(inputs)  # (batch_size, seq_len, 1)
-        attention_weights = tf.nn.softmax(attention_logits, axis=1)  # Softmax across sequence
+        attention_logits = self.attention_dense(inputs)
+        attention_weights = tf.nn.softmax(attention_logits, axis=1)
         return tf.reduce_sum(inputs * attention_weights, axis=1)
-        
+
     def get_config(self):
         config = super().get_config()
         return config
 
+
+@tf.keras.utils.register_keras_serializable(package="scalper")
 class WarmupCosineDecay(tf.keras.optimizers.schedules.LearningRateSchedule):
     def __init__(self, initial_lr=5e-5, warmup_steps=90000, decay_steps=900000):
         super(WarmupCosineDecay, self).__init__()
         self.initial_lr = initial_lr
         self.warmup_steps = warmup_steps
         self.decay_steps = decay_steps
-        
+
     def __call__(self, step):
-        # Linear warmup
-        warmup_lr = self.initial_lr * (tf.cast(step, tf.float32) / 
-                                      tf.cast(self.warmup_steps, tf.float32))
-        
-        # Cosine decay
+        warmup_lr = self.initial_lr * (tf.cast(step, tf.float32) /
+                                       tf.cast(self.warmup_steps, tf.float32))
         cosine_decay = 0.5 * (1 + tf.cos(
-            3.14159 * (tf.cast(step, tf.float32) - self.warmup_steps) / 
+            3.14159 * (tf.cast(step, tf.float32) - self.warmup_steps) /
             tf.cast(self.decay_steps - self.warmup_steps, tf.float32)))
         decay_lr = self.initial_lr * cosine_decay
-        
-        # Use warmup_lr for the first warmup_steps, then decay_lr
         lr = tf.where(step < self.warmup_steps, warmup_lr, decay_lr)
         return lr
-    
-    def get_config(self):
-        """Required for serialization when saving the model."""
-        return {
-            "initial_lr": self.initial_lr,
-            "warmup_steps": self.warmup_steps,
-            "decay_steps": self.decay_steps
-        }
 
-
-class AttentionPooling(Layer):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        
-    def build(self, input_shape):
-        self.attention_dense = Dense(1)  # Remove activation here
-        super().build(input_shape)
-        
-    def call(self, inputs):
-        # inputs shape: (batch_size, seq_len, hidden_dim)
-        attention_logits = self.attention_dense(inputs)  # (batch_size, seq_len, 1)
-        attention_weights = tf.nn.softmax(attention_logits, axis=1)  # Softmax across sequence
-        return tf.reduce_sum(inputs * attention_weights, axis=1)
-        
     def get_config(self):
-        config = super().get_config()
-        return config
-
-class WarmupCosineDecay(tf.keras.optimizers.schedules.LearningRateSchedule):
-    def __init__(self, initial_lr=5e-5, warmup_steps=90000, decay_steps=900000):
-        super(WarmupCosineDecay, self).__init__()
-        self.initial_lr = initial_lr
-        self.warmup_steps = warmup_steps
-        self.decay_steps = decay_steps
-        
-    def __call__(self, step):
-        # Linear warmup
-        warmup_lr = self.initial_lr * (tf.cast(step, tf.float32) / 
-                                      tf.cast(self.warmup_steps, tf.float32))
-        
-        # Cosine decay
-        cosine_decay = 0.5 * (1 + tf.cos(
-            3.14159 * (tf.cast(step, tf.float32) - self.warmup_steps) / 
-            tf.cast(self.decay_steps - self.warmup_steps, tf.float32)))
-        decay_lr = self.initial_lr * cosine_decay
-        
-        # Use warmup_lr for the first warmup_steps, then decay_lr
-        lr = tf.where(step < self.warmup_steps, warmup_lr, decay_lr)
-        return lr
-    
-    def get_config(self):
-        """Required for serialization when saving the model."""
         return {
             "initial_lr": self.initial_lr,
             "warmup_steps": self.warmup_steps,

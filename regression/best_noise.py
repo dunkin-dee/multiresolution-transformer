@@ -8,17 +8,17 @@ from datetime import datetime
 from itertools import product
 import json
 from constants.global_constants import *
-from modeler import create_regression_model
-from transformer_builder import WarmupCosineDecay
-from regression_losses import asymmetric_huber_loss_single, profit_precision_metric, profit_recall_metric
+from core.modeler import create_regression_model
+from core.transformer_builder import WarmupCosineDecay
+from regression.losses import asymmetric_huber_loss_single, profit_precision_metric, profit_recall_metric
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
-from gradient_monitor import GradientAndWeightMonitor, BranchScalingMonitor
+from core.gradient_monitor import GradientAndWeightMonitor, BranchScalingMonitor
 
 
 starting_dir = "data/final_data"
 working_path = "data/regression"
 
-from generators.regression_multi_instrument_data_generator import InstrumentConfig, MultiInstrumentDatasetConfig, create_multi_instrument_dataset
+from core.data_generator import InstrumentConfig, MultiInstrumentDatasetConfig, create_multi_instrument_dataset
 from constants.global_constants import FEATURES, NUM_TOKENS, OTHER_TOKENS, BATCH_SIZE, LOOKBACK_WINDOW
 
 
@@ -296,131 +296,130 @@ def train_and_evaluate(noise_std_min, noise_probability_min, max_epochs=30):
         }
 
 
-# Main hyperparameter search loop
-print("Starting hyperparameter search for noise parameters...")
+if __name__ == "__main__":
+    # Generate all combinations
+    all_combinations = list(product(min_noise_std_range, min_noise_prob_range))
+    # Add the baseline case if not already included
+    baseline = (0, 0)
+    if baseline not in all_combinations:
+        all_combinations.insert(0, baseline)
 
-# Generate all combinations
-all_combinations = list(product(min_noise_std_range, min_noise_prob_range))
-# Add the baseline case if not already included
-baseline = (0, 0)
-if baseline not in all_combinations:
-    all_combinations.insert(0, baseline)
+    total_combinations = len(all_combinations)
+    print("Starting hyperparameter search for noise parameters...")
+    print(f"Total combinations to test: {total_combinations}")
+    print(f"Already completed: {len(completed_combinations)}")
+    print(f"Remaining: {total_combinations - len(completed_combinations)}")
 
-total_combinations = len(all_combinations)
-print(f"Total combinations to test: {total_combinations}")
-print(f"Already completed: {len(completed_combinations)}")
-print(f"Remaining: {total_combinations - len(completed_combinations)}")
+    # Test baseline case first if not already done
+    if baseline not in completed_combinations:
+        print(f"\nTesting baseline case: {baseline}")
+        result = train_and_evaluate(0, 0)
+        results.append(result)
+        completed_combinations.add(baseline)
 
-# Test baseline case first if not already done
-if baseline not in completed_combinations:
-    print(f"\nTesting baseline case: {baseline}")
-    result = train_and_evaluate(0, 0)
-    results.append(result)
-    completed_combinations.add(baseline)
-    
-    # Track best overall performance
-    if result['best_val_loss'] < best_val_loss:
-        best_val_loss = result['best_val_loss']
-        best_params = {
-            'noise_std_min': 0,
-            'noise_probability_min': 0
-        }
-        print(f"*** NEW BEST! Val Loss: {best_val_loss:.6f} ***")
-    
-    # Save checkpoint after baseline
-    save_checkpoint(list(completed_combinations), results, best_params, best_val_loss)
+        # Track best overall performance
+        if result['best_val_loss'] < best_val_loss:
+            best_val_loss = result['best_val_loss']
+            best_params = {
+                'noise_std_min': 0,
+                'noise_probability_min': 0
+            }
+            print(f"*** NEW BEST! Val Loss: {best_val_loss:.6f} ***")
 
-# Continue with remaining combinations
-current_combination = len(completed_combinations)
+        # Save checkpoint after baseline
+        save_checkpoint(list(completed_combinations), results, best_params, best_val_loss)
 
-for noise_std, noise_prob in all_combinations:
-    combination = (noise_std, noise_prob)
-    
-    # Skip if already completed
-    if combination in completed_combinations:
-        continue
-        
-    current_combination += 1
-    print(f"\nProgress: {current_combination}/{total_combinations}")
-    
-    result = train_and_evaluate(noise_std, noise_prob)
-    results.append(result)
-    completed_combinations.add(combination)
-    
-    # Track best overall performance
-    if result['best_val_loss'] < best_val_loss:
-        best_val_loss = result['best_val_loss']
-        best_params = {
-            'noise_std_min': noise_std,
-            'noise_probability_min': noise_prob
-        }
-        print(f"*** NEW BEST! Val Loss: {best_val_loss:.6f} ***")
-    
-    # Save checkpoint after each combination
-    save_checkpoint(list(completed_combinations), results, best_params, best_val_loss)
+    # Continue with remaining combinations
+    current_combination = len(completed_combinations)
 
-# Save final results
-results_df = pd.DataFrame(results)
-timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-final_results_file = f'noise_search_results_final_{timestamp}.csv'
-results_df.to_csv(final_results_file, index=False)
+    for noise_std, noise_prob in all_combinations:
+        combination = (noise_std, noise_prob)
 
-# Clean up checkpoint files
-if os.path.exists(CHECKPOINT_FILE):
-    os.remove(CHECKPOINT_FILE)
-if os.path.exists(RESULTS_FILE):
-    os.remove(RESULTS_FILE)
+        # Skip if already completed
+        if combination in completed_combinations:
+            continue
 
-# Print summary
-print("\n" + "="*80)
-print("HYPERPARAMETER SEARCH COMPLETE")
-print("="*80)
+        current_combination += 1
+        print(f"\nProgress: {current_combination}/{total_combinations}")
 
-print(f"\nBest parameters:")
-print(f"  noise_std_min: {best_params['noise_std_min']}")
-print(f"  noise_probability_min: {best_params['noise_probability_min']}")
-print(f"  Best validation loss: {best_val_loss:.6f}")
+        result = train_and_evaluate(noise_std, noise_prob)
+        results.append(result)
+        completed_combinations.add(combination)
 
-print(f"\nTop 5 configurations:")
-top_5 = results_df.nsmallest(5, 'best_val_loss')
-for idx, row in top_5.iterrows():
-    print(f"  Rank {idx+1}: std={row['noise_std_min']}, prob={row['noise_probability_min']}, "
-          f"val_loss={row['best_val_loss']:.6f}, epoch={row['best_epoch']}")
+        # Track best overall performance
+        if result['best_val_loss'] < best_val_loss:
+            best_val_loss = result['best_val_loss']
+            best_params = {
+                'noise_std_min': noise_std,
+                'noise_probability_min': noise_prob
+            }
+            print(f"*** NEW BEST! Val Loss: {best_val_loss:.6f} ***")
 
-print(f"\nResults saved to: {final_results_file}")
+        # Save checkpoint after each combination
+        save_checkpoint(list(completed_combinations), results, best_params, best_val_loss)
 
-# Optional: Create a simple visualization of results
-try:
-    import matplotlib.pyplot as plt
-    
-    # Create pivot table for heatmap
-    pivot_table = results_df.pivot(index='noise_probability_min', 
-                                   columns='noise_std_min', 
-                                   values='best_val_loss')
-    
-    plt.figure(figsize=(12, 8))
-    plt.imshow(pivot_table.values, cmap='viridis', aspect='auto')
-    plt.colorbar(label='Best Validation Loss')
-    plt.xticks(range(len(pivot_table.columns)), [f'{x:.3f}' for x in pivot_table.columns])
-    plt.yticks(range(len(pivot_table.index)), [f'{x:.1f}' for x in pivot_table.index])
-    plt.xlabel('Noise Standard Deviation (min)')
-    plt.ylabel('Noise Probability (min)')
-    plt.title('Validation Loss Heatmap - Noise Parameter Search')
-    
-    # Mark the best point
-    best_row = results_df.loc[results_df['best_val_loss'].idxmin()]
-    std_idx = list(pivot_table.columns).index(best_row['noise_std_min'])
-    prob_idx = list(pivot_table.index).index(best_row['noise_probability_min'])
-    plt.scatter(std_idx, prob_idx, color='red', s=200, marker='*', label='Best')
-    plt.legend()
-    
-    plt.tight_layout()
-    plt.savefig(f'noise_search_heatmap_{timestamp}.png', dpi=300, bbox_inches='tight')
-    print(f"Heatmap saved to: noise_search_heatmap_{timestamp}.png")
-    
-except ImportError:
-    print("matplotlib not available - skipping visualization")
-except Exception as e:
-    print(f"Error creating visualization: {str(e)}")
+    # Save final results
+    results_df = pd.DataFrame(results)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    final_results_file = f'noise_search_results_final_{timestamp}.csv'
+    results_df.to_csv(final_results_file, index=False)
 
-print(f"\nSearch complete! Best model checkpoint: {results_df.loc[results_df['best_val_loss'].idxmin(), 'checkpoint_path']}")
+    # Clean up checkpoint files
+    if os.path.exists(CHECKPOINT_FILE):
+        os.remove(CHECKPOINT_FILE)
+    if os.path.exists(RESULTS_FILE):
+        os.remove(RESULTS_FILE)
+
+    # Print summary
+    print("\n" + "="*80)
+    print("HYPERPARAMETER SEARCH COMPLETE")
+    print("="*80)
+
+    print(f"\nBest parameters:")
+    print(f"  noise_std_min: {best_params['noise_std_min']}")
+    print(f"  noise_probability_min: {best_params['noise_probability_min']}")
+    print(f"  Best validation loss: {best_val_loss:.6f}")
+
+    print(f"\nTop 5 configurations:")
+    top_5 = results_df.nsmallest(5, 'best_val_loss')
+    for idx, row in top_5.iterrows():
+        print(f"  Rank {idx+1}: std={row['noise_std_min']}, prob={row['noise_probability_min']}, "
+              f"val_loss={row['best_val_loss']:.6f}, epoch={row['best_epoch']}")
+
+    print(f"\nResults saved to: {final_results_file}")
+
+    # Optional: Create a simple visualization of results
+    try:
+        import matplotlib.pyplot as plt
+
+        # Create pivot table for heatmap
+        pivot_table = results_df.pivot(index='noise_probability_min',
+                                       columns='noise_std_min',
+                                       values='best_val_loss')
+
+        plt.figure(figsize=(12, 8))
+        plt.imshow(pivot_table.values, cmap='viridis', aspect='auto')
+        plt.colorbar(label='Best Validation Loss')
+        plt.xticks(range(len(pivot_table.columns)), [f'{x:.3f}' for x in pivot_table.columns])
+        plt.yticks(range(len(pivot_table.index)), [f'{x:.1f}' for x in pivot_table.index])
+        plt.xlabel('Noise Standard Deviation (min)')
+        plt.ylabel('Noise Probability (min)')
+        plt.title('Validation Loss Heatmap - Noise Parameter Search')
+
+        # Mark the best point
+        best_row = results_df.loc[results_df['best_val_loss'].idxmin()]
+        std_idx = list(pivot_table.columns).index(best_row['noise_std_min'])
+        prob_idx = list(pivot_table.index).index(best_row['noise_probability_min'])
+        plt.scatter(std_idx, prob_idx, color='red', s=200, marker='*', label='Best')
+        plt.legend()
+
+        plt.tight_layout()
+        plt.savefig(f'noise_search_heatmap_{timestamp}.png', dpi=300, bbox_inches='tight')
+        print(f"Heatmap saved to: noise_search_heatmap_{timestamp}.png")
+
+    except ImportError:
+        print("matplotlib not available - skipping visualization")
+    except Exception as e:
+        print(f"Error creating visualization: {str(e)}")
+
+    print(f"\nSearch complete! Best model checkpoint: {results_df.loc[results_df['best_val_loss'].idxmin(), 'checkpoint_path']}")

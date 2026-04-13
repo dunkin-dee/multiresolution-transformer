@@ -4,18 +4,18 @@ import tensorflow as tf
 import numpy as np
 from datetime import datetime
 from constants.global_constants import *
-from modeler import create_regression_model
-from transformer_builder import WarmupCosineDecay
-from regression_losses import asymmetric_huber_loss_single, profit_precision_metric, profit_recall_metric
+from core.modeler import create_regression_model
+from core.transformer_builder import WarmupCosineDecay
+from regression.losses import asymmetric_huber_loss_single, profit_precision_metric, profit_recall_metric
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
-from gradient_monitor import GradientAndWeightMonitor, BranchScalingMonitor
+from core.gradient_monitor import GradientAndWeightMonitor, BranchScalingMonitor
 
 
 starting_dir = "data/final_data"
 working_path = "data/experimenting"
 
 import os
-from generators.regression_multi_instrument_data_generator import InstrumentConfig, MultiInstrumentDatasetConfig, create_multi_instrument_dataset
+from core.data_generator import InstrumentConfig, MultiInstrumentDatasetConfig, create_multi_instrument_dataset
 from constants.global_constants import FEATURES, NUM_TOKENS, OTHER_TOKENS, BATCH_SIZE, LOOKBACK_WINDOW
 
 
@@ -113,68 +113,67 @@ def get_datasets_and_steps(instruments=instruments, working_path=working_path, f
     )
 
 
-(train_dataset, val_dataset, test_dataset), (train_steps, val_steps, test_steps) = get_datasets_and_steps()
+if __name__ == "__main__":
+    (train_dataset, val_dataset, test_dataset), (train_steps, val_steps, test_steps) = get_datasets_and_steps()
 
-def compile_model_lightweight(model, updelta, downdelta):
-    """
-    Streamlined compilation with only the most important metrics
-    Mixed precision compatible.
-    """
-    lr_schedule = WarmupCosineDecay(initial_lr=1e-5, warmup_steps=train_steps*2, decay_steps=train_steps*40)
-    model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=lr_schedule),
-        loss={
-            'target_high': 'mse'
-        },
-        metrics={
-            'target_high': [
-                'mae',
-                'mse',
-                # profit_precision_metric(threshold=6.0),
-                # profit_recall_metric(threshold=6.0),
-            ]
-        }
-    )
-    return model
+    def compile_model_lightweight(model, updelta, downdelta):
+        """
+        Streamlined compilation with only the most important metrics
+        Mixed precision compatible.
+        """
+        lr_schedule = WarmupCosineDecay(initial_lr=1e-5, warmup_steps=train_steps*2, decay_steps=train_steps*40)
+        model.compile(
+            optimizer=tf.keras.optimizers.Adam(learning_rate=lr_schedule),
+            loss={
+                'target_high': 'mse',
+                'target_low': 'mse',
+            },
+            loss_weights={
+                'target_high': 1.0,
+                'target_low': 1.0,
+            },
+            metrics={
+                'target_high': ['mae', 'mse'],
+                'target_low': ['mae', 'mse'],
+            }
+        )
+        return model
 
+    model = create_regression_model(feature_cols=feature_cols, d_model=R_D_MODEL, num_heads=R_NUM_HEADS, ff_dim=R_FF_DIM,
+                                    num_tokens=NUM_TOKENS, other_tokens=OTHER_TOKENS)
+    model = compile_model_lightweight(model=model, updelta=6.0, downdelta=-1.0)
 
-model = create_regression_model(feature_cols=feature_cols, d_model=R_D_MODEL, num_heads=R_NUM_HEADS, ff_dim=R_FF_DIM,
-                                num_tokens=NUM_TOKENS, other_tokens=OTHER_TOKENS)
-model = compile_model_lightweight(model=model, updelta=6.0, downdelta=-1.0)
-
-
-early_stopping = EarlyStopping(monitor='val_mse', 
-                               patience=10,
-                               mode='min', 
-                               verbose=1)
-
-model_checkpoint = ModelCheckpoint('models/regressor.keras', 
-                                   monitor='val_mse', 
-                                   save_best_only=True, 
-                                   mode='min', 
+    early_stopping = EarlyStopping(monitor='val_loss',
+                                   patience=10,
+                                   mode='min',
                                    verbose=1)
 
-gradient_monitor = GradientAndWeightMonitor(
-    log_frequency=1,           # Check every epoch
-    gradient_threshold=10.0,   # Alert if gradient norm > 10
-    weight_threshold=100.0     # Alert if any layer weight norm > 100
-)
+    model_checkpoint = ModelCheckpoint('models/regressor.keras',
+                                       monitor='val_loss',
+                                       save_best_only=True,
+                                       mode='min',
+                                       verbose=1)
 
-branch_monitor = BranchScalingMonitor(
-    log_frequency=1,    # Print weights every 5 epochs
-    save_history=True   # Save history for potential plotting
-)
+    gradient_monitor = GradientAndWeightMonitor(
+        log_frequency=1,
+        gradient_threshold=10.0,
+        weight_threshold=100.0
+    )
 
+    branch_monitor = BranchScalingMonitor(
+        log_frequency=1,
+        save_history=True
+    )
 
-history = model.fit(
-    train_dataset,
-    epochs=50,
-    steps_per_epoch=train_steps,
-    validation_data=val_dataset,
-    validation_steps=val_steps,
-    callbacks=[early_stopping, model_checkpoint, gradient_monitor, branch_monitor]
-)
+    history = model.fit(
+        train_dataset,
+        epochs=50,
+        steps_per_epoch=train_steps,
+        validation_data=val_dataset,
+        validation_steps=val_steps,
+        callbacks=[early_stopping, model_checkpoint, gradient_monitor, branch_monitor]
+    )
 
-model.load_weights('models/regressor.keras')
+    model.load_weights('models/regressor.keras')
 
-predictions = model.predict(test_dataset, steps=test_steps)
+    predictions = model.predict(test_dataset, steps=test_steps)

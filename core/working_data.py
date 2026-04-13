@@ -597,12 +597,32 @@ def alt_label_df(df,
     df = df.drop(columns=['candle'])
     return df.iloc[:len(df) - window_size].copy()
 
-def regression_label_df_next(df):
+def regression_label_df_next(df, window_size=12):
+    """
+    Compute regression labels over a forward-looking window.
+
+    target_high = max(high_normalized_for_label) over the next window_size candles
+    target_low  = min(low_normalized_for_label)  over the next window_size candles
+
+    Rows where the full forward window is unavailable (last window_size rows) are
+    marked include=0 so the generator skips them.
+    """
     df = df.copy()
     df = df.reset_index(drop=True)
-    df['target_high'] = df['close_normalized_for_label'].shift(-1)
-    df['target_low'] = df['close_normalized_for_label'].shift(-1)
+
+    shifted_highs = pd.concat(
+        [df['high_normalized_for_label'].shift(-i) for i in range(1, window_size + 1)],
+        axis=1
+    )
+    shifted_lows = pd.concat(
+        [df['low_normalized_for_label'].shift(-i) for i in range(1, window_size + 1)],
+        axis=1
+    )
+
+    df['target_high'] = shifted_highs.max(axis=1)
+    df['target_low'] = shifted_lows.min(axis=1)
     df['include'] = 1
+    df.iloc[-window_size:, df.columns.get_loc('include')] = 0
 
     return df
 

@@ -1,7 +1,7 @@
 import os
 import pandas as pd
 from datetime import datetime
-from working_data import clean_five_minute_data, add_timing, normalize_by_window, clean_hour_data, split_multiresolution_chunks, alt_label_df
+from core.working_data import clean_five_minute_data, add_timing, normalize_by_window, clean_hour_data, split_multiresolution_chunks, alt_label_df
 from constants.global_constants import *
 
 

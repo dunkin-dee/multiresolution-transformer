@@ -3,17 +3,17 @@ import pandas as pd
 import numpy as np
 import tensorflow as tf
 from constants.global_constants import NORMALIZING_WINDOW_SIZE, FEATURES, NUM_TOKENS, OTHER_TOKENS
-from working_data import normalize_by_window, add_timing
+from core.working_data import normalize_by_window, add_timing
 import json
 import time
-from transformer_builder import (
+from core.transformer_builder import (
     LearnablePositionalEncoding, 
     StochasticGatedTransformerBlock, 
     AddTypeEmbedding, 
     AttentionPooling
 )
-from losses import recommended_trading_loss
-from modeler import create_model
+from classification.losses import recommended_trading_loss
+from core.modeler import create_model
 
 custom_objects = {
         'LearnablePositionalEncoding': LearnablePositionalEncoding,

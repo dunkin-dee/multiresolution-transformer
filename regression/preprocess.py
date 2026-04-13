@@ -1,7 +1,7 @@
 import os
 import pandas as pd
 from datetime import datetime
-from working_data import clean_five_minute_data, add_partial_hour_ohlc, add_timing, normalize_by_window, clean_hour_data, split_multiresolution_chunks, regression_label_df, normalize_partial_hour, regression_label_df_next
+from core.working_data import clean_five_minute_data, add_partial_hour_ohlc, add_timing, normalize_by_window, clean_hour_data, split_multiresolution_chunks, normalize_partial_hour, regression_label_df_next
 from constants.global_constants import *
 
 starting_dir = "data/final_data"
@@ -19,8 +19,8 @@ for instrument in instruments:
     df = add_timing(df)
     df = add_partial_hour_ohlc(df)
     df = normalize_by_window(
-        df, 
-        window_size=NORMALIZING_WINDOW_SIZE, 
+        df,
+        window_size=NORMALIZING_WINDOW_SIZE,
         low_col='low',
         high_col='high',
         normalizing_cols=[
@@ -29,7 +29,7 @@ for instrument in instruments:
             'low',
             'close'
         ],
-        label_cols=['open', 'close'],
+        label_cols=['open', 'close', 'high', 'low'],
         keep_normalization_params=True)
 
     hour_df = pd.read_csv(f"{starting_dir}/{instrument}/hours.csv")
@@ -55,7 +55,7 @@ for instrument in instruments:
     df = normalize_partial_hour(df, hour_df)
 
     print(f"Labeling...\n\n\n")
-    df = regression_label_df_next(df)
+    df = regression_label_df_next(df, window_size=REGRESSION_LABELING_WINDOW_SIZE)
 
 
     os.makedirs(f"{working_path}/{instrument}", exist_ok=True)

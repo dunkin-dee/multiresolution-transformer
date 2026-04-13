@@ -212,22 +212,26 @@ class SingleInstrumentProcessor:
     def _build_indices(self):
         """Build indices for all valid samples for this instrument"""
         logger.info(f"Building indices for {self.instrument_config.name}...")
-        
+
         for chunk_idx in range(self.chunk_manager.get_chunk_count()):
             chunk_df = self.chunk_manager.get_chunk(chunk_idx)
-            
-            # Apply time filtering if threshold exists
+
+            # Determine the earliest valid row in the unfiltered chunk coordinate space.
+            # Using searchsorted on the unfiltered chunk ensures row_idx values stored
+            # in valid_indices stay consistent with what extract_sample reads from cache.
+            start_row = self.config.lookback_window
             if self.time_threshold is not None:
-                chunk_df = chunk_df.filter(pl.col('time') >= self.time_threshold)
-            
-            if chunk_df.shape[0] == 0:
+                chunk_times = chunk_df['time'].to_numpy()
+                threshold_idx = int(np.searchsorted(chunk_times, self.time_threshold, side='left'))
+                start_row = max(start_row, threshold_idx)
+
+            if start_row >= chunk_df.shape[0]:
                 continue
-            
-            # Find valid indices within this chunk - simplified for regression
-            for row_idx in range(self.config.lookback_window, chunk_df.shape[0]):
+
+            for row_idx in range(start_row, chunk_df.shape[0]):
                 if chunk_df[row_idx, 'include'] == 1:
                     self.valid_indices.append((chunk_idx, row_idx))
-        
+
         logger.info(f"Built indices for {self.instrument_config.name}: {len(self.valid_indices)} valid samples")
     
     def extract_sample(self, chunk_idx: int, row_idx: int) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
@@ -255,8 +259,8 @@ class SingleInstrumentProcessor:
             # Get inputs and dual targets
             main_input = main_sequence[-self.config.main_lookback_tokens:]
             target_values = np.array([
-                chunk_df[row_idx, 'target_high'], 
-                # chunk_df[row_idx, 'target_low']
+                chunk_df[row_idx, 'target_high'],
+                chunk_df[row_idx, 'target_low']
             ], dtype=np.float32)
             
             # NEW: Apply noise independently to 5-minute and hourly data
@@ -394,7 +398,6 @@ class MultiInstrumentDataGenerator:
                     samples_processed += 1
                     
                     if batch_idx == self.config.batch_size:
-                        # Yield full batch with additional inputs
                         yield (
                             tf.convert_to_tensor(batch_main, dtype=tf.float32),
                             tf.convert_to_tensor(batch_hourly, dtype=tf.float32),
@@ -402,12 +405,13 @@ class MultiInstrumentDataGenerator:
                             tf.convert_to_tensor(batch_minutes, dtype=tf.float32),
                             tf.convert_to_tensor(batch_length, dtype=tf.float32),
                             {
-                            'target_high': tf.convert_to_tensor(batch_targets[:, 0], dtype=tf.float32),
-                            'norm_min': tf.convert_to_tensor(batch_norm_min[:, 0], dtype=tf.float32),
-                            'norm_max': tf.convert_to_tensor(batch_norm_max[:, 0], dtype=tf.float32),
-                            'original_close': tf.convert_to_tensor(batch_original_close[:, 0], dtype=tf.float32),
-                        }
-                    )
+                                'target_high': tf.convert_to_tensor(batch_targets[:, 0], dtype=tf.float32),
+                                'target_low': tf.convert_to_tensor(batch_targets[:, 1], dtype=tf.float32),
+                                'norm_min': tf.convert_to_tensor(batch_norm_min[:, 0], dtype=tf.float32),
+                                'norm_max': tf.convert_to_tensor(batch_norm_max[:, 0], dtype=tf.float32),
+                                'original_close': tf.convert_to_tensor(batch_original_close[:, 0], dtype=tf.float32),
+                            }
+                        )
                         batch_idx = 0
                 
                 except Exception as e:
@@ -415,7 +419,7 @@ class MultiInstrumentDataGenerator:
                     logger.warning(f"Skipping sample from {instrument_name} ({chunk_idx}, {row_idx}): {e}")
                     continue
             
-            # Yield remaining samples
+            # Yield remaining samples (remainder of final epoch batch)
             if batch_idx > 0:
                 yield (
                     tf.convert_to_tensor(batch_main[:batch_idx], dtype=tf.float32),
@@ -424,10 +428,11 @@ class MultiInstrumentDataGenerator:
                     tf.convert_to_tensor(batch_minutes[:batch_idx], dtype=tf.float32),
                     tf.convert_to_tensor(batch_length[:batch_idx], dtype=tf.float32),
                     {
-                        'target_high': tf.convert_to_tensor(batch_targets[:, 0], dtype=tf.float32),
-                        'norm_min': tf.convert_to_tensor(batch_norm_min, dtype=tf.float32),
-                        'norm_max': tf.convert_to_tensor(batch_norm_max, dtype=tf.float32),
-                        'original_close': tf.convert_to_tensor(batch_original_close, dtype=tf.float32),
+                        'target_high': tf.convert_to_tensor(batch_targets[:batch_idx, 0], dtype=tf.float32),
+                        'target_low': tf.convert_to_tensor(batch_targets[:batch_idx, 1], dtype=tf.float32),
+                        'norm_min': tf.convert_to_tensor(batch_norm_min[:batch_idx, 0], dtype=tf.float32),
+                        'norm_max': tf.convert_to_tensor(batch_norm_max[:batch_idx, 0], dtype=tf.float32),
+                        'original_close': tf.convert_to_tensor(batch_original_close[:batch_idx, 0], dtype=tf.float32),
                     }
                 )
             
@@ -447,8 +452,7 @@ class MultiInstrumentDataGenerator:
             'instruments': instrument_stats,
             'total_samples': total_samples,
             'feature_columns': self.config.feature_columns,
-            # 'target_columns': ['target_high', 'target_low'],
-            'target_columns': ['target_high'],
+            'target_columns': ['target_high', 'target_low'],
             'shuffle_enabled': self.config.shuffle_data,
         }
 
@@ -478,9 +482,10 @@ def create_multi_instrument_dataset(config: MultiInstrumentDatasetConfig, repeat
             tf.TensorSpec(shape=(None, 1), dtype=tf.float32),
             {
                 'target_high': tf.TensorSpec(shape=(None,), dtype=tf.float32),
-                'norm_min': tf.TensorSpec(shape=(None,), dtype=tf.float32),      # NEW
-                'norm_max': tf.TensorSpec(shape=(None,), dtype=tf.float32),      # NEW
-                'original_close': tf.TensorSpec(shape=(None,), dtype=tf.float32), # NEW
+                'target_low': tf.TensorSpec(shape=(None,), dtype=tf.float32),
+                'norm_min': tf.TensorSpec(shape=(None,), dtype=tf.float32),
+                'norm_max': tf.TensorSpec(shape=(None,), dtype=tf.float32),
+                'original_close': tf.TensorSpec(shape=(None,), dtype=tf.float32),
             }
         )
     )

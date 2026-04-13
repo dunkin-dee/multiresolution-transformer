@@ -1,13 +1,13 @@
 import os
 import json
-from transformer_builder import (
+from core.transformer_builder import (
     LearnablePositionalEncoding, 
     StochasticGatedTransformerBlock, 
     AddTypeEmbedding, 
     AttentionPooling
 )
 import tensorflow as tf
-from losses import recommended_trading_loss
+from classification.losses import recommended_trading_loss
 
 # Load instruments
 instruments = os.listdir('models')

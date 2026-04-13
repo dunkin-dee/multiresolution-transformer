@@ -1,5 +1,5 @@
 import os
-from generators.multi_instrument_data_generator import InstrumentConfig, MultiInstrumentDatasetConfig, create_multi_instrument_dataset
+from classification.generators.data_generator import InstrumentConfig, MultiInstrumentDatasetConfig, create_multi_instrument_dataset
 from constants.global_constants import FEATURES, NUM_TOKENS, OTHER_TOKENS, BATCH_SIZE, LOOKBACK_WINDOW
 
 

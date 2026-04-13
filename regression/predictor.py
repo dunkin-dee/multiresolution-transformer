@@ -4,9 +4,9 @@ import pandas as pd
 import numpy as np
 import tensorflow as tf
 from constants.global_constants import NORMALIZING_WINDOW_SIZE, FEATURES, NUM_TOKENS, OTHER_TOKENS, R_D_MODEL, R_FF_DIM, R_NUM_HEADS
-from working_data import normalize_by_window, add_timing, add_partial_hour_ohlc, normalize_partial_hour
+from core.working_data import normalize_by_window, add_timing, add_partial_hour_ohlc, normalize_partial_hour
 import json
-from modeler import create_regression_model
+from core.modeler import create_regression_model
 from datetime import datetime, timedelta
 
 
@@ -212,56 +212,56 @@ def get_inference_data(main_path, hourly_path, main_lookback_tokens, hourly_look
 
 
 
-model = create_regression_model(feature_cols=FEATURES, d_model=R_D_MODEL, num_heads=R_NUM_HEADS, ff_dim=R_FF_DIM,
-                                num_tokens=NUM_TOKENS, other_tokens=OTHER_TOKENS, training=False)
+if __name__ == "__main__":
+    model = create_regression_model(feature_cols=FEATURES, d_model=R_D_MODEL, num_heads=R_NUM_HEADS, ff_dim=R_FF_DIM,
+                                    num_tokens=NUM_TOKENS, other_tokens=OTHER_TOKENS, training=False)
 
+    for instrument in instruments:
+        print(f"Processing {instrument}...")
 
-for instrument in instruments:
-    print(f"Processing {instrument}...")
+        main_path = os.path.join(base_win_path, 'checking_data', instrument, 'five_minutes.csv')
+        hourly_path = os.path.join(base_win_path, 'checking_data', instrument, 'hours.csv')
 
-    main_path = os.path.join(base_win_path, 'checking_data', instrument, 'five_minutes.csv')
-    hourly_path = os.path.join(base_win_path, 'checking_data', instrument, 'hours.csv')
-    
-    # Updated to handle all 5 returned components
-    main_inputs, hourly_inputs, partial_hour_inputs, minutes_inputs, length_inputs, times, closes, prev_closes, opens, prev_opens, cns, candles = get_inference_data(
-        main_path=main_path,
-        hourly_path=hourly_path,
-        main_lookback_tokens=MAIN_LOOKBACK_TOKENS,
-        hourly_lookback_tokens=HOURLY_LOOKBACK_TOKENS,
-        feature_columns=FEATURES
-    )
-    
-    model.load_weights(f"models/regressor_{instrument}.keras")
-    
-    for i in range(len(main_inputs)):
-        main_input = main_inputs[i]
-        hourly_input = hourly_inputs[i]
-        partial_hour_input = partial_hour_inputs[i]
-        minutes_input = minutes_inputs[i]
-        length_input = length_inputs[i]
-        
-        # Apply your filtering conditions
-        condition1 = (closes[i] > opens[i]) and (prev_closes[i] > prev_opens[i])
-        
-        # Condition 2: Current close is above previous open
-        condition2 = closes[i] > prev_opens[i]
-        if not (condition1 or condition2):
-            continue
-        if cns[i] > 0.7 or cns[i] < 0.3:
-            continue
-        if times[i].hour < 10 or times[i].hour > 18:
-            continue
-            
-        # Model prediction with all 5 inputs
-        prediction = model.predict([
-            main_input, 
-            hourly_input, 
-            partial_hour_input, 
-            minutes_input, 
-            length_input
-        ], verbose=0)
-        
-        if prediction['target_high'][0][0] > 9:
-            print(prediction['target_high'][0][0], instrument)
-            print('At:', times[i])
-            print('='*10, '\n\n')
+        # Updated to handle all 5 returned components
+        main_inputs, hourly_inputs, partial_hour_inputs, minutes_inputs, length_inputs, times, closes, prev_closes, opens, prev_opens, cns, candles = get_inference_data(
+            main_path=main_path,
+            hourly_path=hourly_path,
+            main_lookback_tokens=MAIN_LOOKBACK_TOKENS,
+            hourly_lookback_tokens=HOURLY_LOOKBACK_TOKENS,
+            feature_columns=FEATURES
+        )
+
+        model.load_weights(f"models/regressor_{instrument}.keras")
+
+        for i in range(len(main_inputs)):
+            main_input = main_inputs[i]
+            hourly_input = hourly_inputs[i]
+            partial_hour_input = partial_hour_inputs[i]
+            minutes_input = minutes_inputs[i]
+            length_input = length_inputs[i]
+
+            # Apply your filtering conditions
+            condition1 = (closes[i] > opens[i]) and (prev_closes[i] > prev_opens[i])
+
+            # Condition 2: Current close is above previous open
+            condition2 = closes[i] > prev_opens[i]
+            if not (condition1 or condition2):
+                continue
+            if cns[i] > 0.7 or cns[i] < 0.3:
+                continue
+            if times[i].hour < 10 or times[i].hour > 18:
+                continue
+
+            # Model prediction with all 5 inputs
+            prediction = model.predict([
+                main_input,
+                hourly_input,
+                partial_hour_input,
+                minutes_input,
+                length_input
+            ], verbose=0)
+
+            if prediction['target_high'][0][0] > 9:
+                print(prediction['target_high'][0][0], instrument)
+                print('At:', times[i])
+                print('='*10, '\n\n')

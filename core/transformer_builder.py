@@ -72,7 +72,7 @@ class StochasticGatedTransformerBlock(tf.keras.layers.Layer):
             dropout=self.attention_dropout
         )
         self.gate_att = tf.keras.layers.Dense(self.embed_dim, activation='sigmoid')
-        self.ff1 = tf.keras.layers.Dense(self.ff_dim, activation="relu")
+        self.ff1 = tf.keras.layers.Dense(self.ff_dim, activation="gelu")
         self.ff2 = tf.keras.layers.Dense(self.embed_dim)
         self.gate_ffn = tf.keras.layers.Dense(self.embed_dim, activation='sigmoid')
         self.layernorm1 = LayerNormalization(epsilon=1e-6)
@@ -178,7 +178,6 @@ class StochasticGatedTransformerBlock(tf.keras.layers.Layer):
 
             ffn_output = gate_val * ffn_output
             ffn_output = self.dropout2(ffn_output, training=training)
-            ffn_output = self.stochastic_depth(ffn_output, training)
             return self.layernorm2(out1 + ffn_output)
 
         random_value = tf.random.uniform([], dtype=tf.float32)

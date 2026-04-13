@@ -74,7 +74,7 @@ class TemporalPreservingDropout(Layer):
 
 def create_regression_model(input_shape=(64, 5), other_input_shape=(64, 5), 
                            partial_hour_shape=(1, 5),  # Single aggregated hour token
-                           training=True, stochastic_rates=[0.05, 0.1, 0.15, 0.2],
+                           stochastic_rates=[0.05, 0.1, 0.15, 0.2],
                            d_model=D_MODEL, num_heads=NUM_HEADS, ff_dim=FF_DIM,
                            num_tokens=NUM_TOKENS, other_tokens=OTHER_TOKENS,
                            feature_cols=[
@@ -182,7 +182,7 @@ def create_regression_model(input_shape=(64, 5), other_input_shape=(64, 5),
             ff_dim,
             rate=0.1,
             stochastic_depth_rate=stochastic_rates[i]
-        )(x_norm, training=training)
+        )(x_norm)
 
         x_block_out = TemporalPreservingDropout(stochastic_rates[i], preserve_last=8)(x_block_out)
         

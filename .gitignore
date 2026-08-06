@@ -1,12 +1,48 @@
-recent_data/
-training_bkup/
-training/
-recent_data/
-__pycache__/
+# Data — raw and preprocessed OHLC (tens of GB, not distributable)
 data/
-binary_attempt.ipynb
-checkpoints/
-*.h5
-*.csv
+working/
+recent_data/
+training/
+training_bkup/
+
+# Model artifacts
 *.keras
+*.h5
 *.pkl
+models/
+checkpoints/
+checkpoints_*/
+checkpoints?copy/
+training_checkpoints/
+model_backup/
+memd/
+
+# Bulk CSVs are data; curated experiment results are not.
+*.csv
+!results/*.csv
+
+# Resumable-search scratch state (the final results land in results/)
+search_checkpoint.json
+search_results_incremental.csv
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Notebooks
+.ipynb_checkpoints/
+binary_attempt.ipynb
+
+# Agent working notes — kept locally, not published
+CLAUDE.md
+
+# OS / editor
+*:Zone.Identifier
+.DS_Store
+.vscode/
+.idea/

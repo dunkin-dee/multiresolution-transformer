@@ -1,0 +1,5 @@
+noise_std_min,noise_probability_min,best_val_loss,final_val_loss,best_epoch,total_epochs,best_val_mae,best_val_mse,checkpoint_path,status,error
+0.0,0.0,9.826152801513672,10.542935371398926,9,17,4.211220741271973,26.756668090820312,models/regressor_std0_prob0.keras,completed,
+0.001,0.2,9.7122220993042,10.168956756591797,18,26,3.939827680587769,28.19793701171875,models/regressor_std0.001_prob0.2.keras,completed,
+0.001,0.7,9.837607383728027,10.416219711303711,9,17,3.9747495651245117,24.779449462890625,models/regressor_std0.001_prob0.7.keras,completed,
+0.001,0.9,9.861635208129883,10.19035530090332,9,17,3.592428684234619,21.739261627197266,models/regressor_std0.001_prob0.9.keras,completed,

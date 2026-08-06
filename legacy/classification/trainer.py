@@ -4,8 +4,8 @@ import json
 import pickle
 from datetime import datetime, time
 from tensorflow.keras.callbacks import Callback
-from classification.losses import precision_focused_balanced_loss
-from classification.datasets import get_datasets_and_steps
+from legacy.classification.losses import precision_focused_balanced_loss
+from legacy.classification.datasets import get_datasets_and_steps
 from core.transformer_builder import WarmupCosineDecay
 from core.modeler import create_model
 from constants.global_constants import LR, WARMUP, DECAY

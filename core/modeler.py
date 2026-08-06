@@ -1,10 +1,39 @@
-from constants.global_constants import *
+"""Keras model definition for the multi-resolution price-range regressor.
+
+The ``package="scalper"`` registration strings below are serialization keys baked
+into existing ``.keras`` checkpoints — see the note in ``transformer_builder.py``.
+Do not rename them.
+"""
+
 import tensorflow as tf
-from core.transformer_builder import LearnablePositionalEncoding, StochasticGatedTransformerBlock, AddTypeEmbedding, AttentionPooling
-from tensorflow.keras.layers import Input, Conv1D,  Dense, concatenate, Dropout, Layer, GlobalAveragePooling1D, GlobalMaxPooling1D, LayerNormalization, Add, Lambda
+from tensorflow.keras.layers import (
+    Add,
+    Conv1D,
+    Dense,
+    GlobalAveragePooling1D,
+    GlobalMaxPooling1D,
+    Input,
+    Lambda,
+    Layer,
+    LayerNormalization,
+    concatenate,
+)
 from tensorflow.keras.models import Model
-from keras.ops import sin, cos, concatenate as keras_concat, expand_dims
-from tensorflow.keras.regularizers import l2
+
+from constants.global_constants import (
+    FEATURES,
+    NUM_TOKENS,
+    OTHER_TOKENS,
+    R_D_MODEL,
+    R_FF_DIM,
+    R_NUM_HEADS,
+)
+from core.transformer_builder import (
+    AddTypeEmbedding,
+    AttentionPooling,
+    LearnablePositionalEncoding,
+    StochasticGatedTransformerBlock,
+)
 
 
 @tf.keras.utils.register_keras_serializable(package="scalper")
@@ -72,29 +101,52 @@ class TemporalPreservingDropout(Layer):
         return {"rate": self.rate, "preserve_last": self.preserve_last}
 
 
-def create_regression_model(input_shape=(64, 5), other_input_shape=(64, 5), 
-                           partial_hour_shape=(1, 5),  # Single aggregated hour token
-                           stochastic_rates=[0.05, 0.1, 0.15, 0.2],
-                           d_model=D_MODEL, num_heads=NUM_HEADS, ff_dim=FF_DIM,
-                           num_tokens=NUM_TOKENS, other_tokens=OTHER_TOKENS,
-                           feature_cols=[
-                               'open_normalized',
-                               'high_normalized', 
-                               'low_normalized',
-                               'close_normalized']):
-    
+def create_regression_model(stochastic_rates=[0.05, 0.1, 0.15, 0.2],
+                            d_model=R_D_MODEL, num_heads=R_NUM_HEADS, ff_dim=R_FF_DIM,
+                            num_tokens=NUM_TOKENS, other_tokens=OTHER_TOKENS,
+                            feature_cols=FEATURES):
+    """Build the multi-resolution regression model.
+
+    Five inputs are merged along the *sequence* axis into one token stream, so a
+    single transformer stack attends across resolutions rather than fusing two
+    independently-encoded summaries. A learned type embedding tags each token
+    with its origin (5-minute / hourly / partial hour) so the attention can tell
+    them apart, and a learned scalar per branch lets the model decide how loudly
+    each resolution speaks.
+
+    Args:
+        stochastic_rates: Per-layer stochastic depth rates. Length sets the
+            number of transformer blocks.
+        d_model: Hidden width. Must be divisible in a way that leaves room for
+            the 16-dim type embedding (branches are projected to ``d_model - 16``).
+        num_heads: Attention heads.
+        ff_dim: Feed-forward width inside each block.
+        num_tokens: 5-minute sequence length.
+        other_tokens: Hourly sequence length.
+        feature_cols: Normalised OHLC column names; only the count is used, to
+            size the input channels.
+
+    Returns:
+        A Keras model with inputs
+        ``[minute_input, hourly_input, partial_hour_input, minutes_into_hour,
+        partial_hour_length]`` and dict outputs ``{'target_high', 'target_low'}``.
+
+    Note:
+        This builds exactly one secondary-resolution branch (hourly).
+        ``core.data_generator`` can emit N secondary resolutions; consuming more
+        than one requires extending this function to match. See the README.
+    """
+    n_features = len(feature_cols)
+
     # Main (5-minute) data input - normalized on 5-min lookback
-    input_shape = (NUM_TOKENS, len(feature_cols))
-    input_layer = Input(shape=input_shape, name='minute_input')
-    
+    input_layer = Input(shape=(num_tokens, n_features), name='minute_input')
+
     # Complete hourly data input - normalized on hourly lookback
-    other_input_shape = (OTHER_TOKENS, len(feature_cols))
-    other_input_layer = Input(shape=other_input_shape, name='hourly_input')
-    
+    other_input_layer = Input(shape=(other_tokens, n_features), name='hourly_input')
+
     # Partial hour data - single aggregated token normalized using SAME scheme as hourly data
     # This provides hourly-compatible context for the current incomplete hour
-    partial_hour_shape = (1, len(feature_cols))
-    partial_hour_layer = Input(shape=partial_hour_shape, name='partial_hour_input')
+    partial_hour_layer = Input(shape=(1, n_features), name='partial_hour_input')
     
     # Temporal context inputs for the partial hour data
     minutes_into_hour = Input(shape=(1,), name='minutes_into_hour')  # 0-55

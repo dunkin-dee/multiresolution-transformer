@@ -633,6 +633,21 @@ def create_multi_instrument_dataset(
     return dataset, generator.get_total_training_samples()
 
 
+def strip_eval_targets(dataset: tf.data.Dataset) -> tf.data.Dataset:
+    """Remove evaluation-only metadata (norm_min, norm_max, original_close) from the
+    targets dict, leaving only the model output keys (target_high, target_low).
+
+    Call this before model.fit() — Keras raises KeyError on unknown target keys.
+    Do NOT call it for evaluation loops that need denormalisation metadata.
+    """
+    return dataset.map(
+        lambda inputs, targets: (inputs, {
+            'target_high': targets['target_high'],
+            'target_low': targets['target_low'],
+        })
+    )
+
+
 def get_multi_instrument_sample_count(config: MultiInstrumentDatasetConfig) -> int:
     """Get total sample count across all instruments."""
     generator = MultiInstrumentDataGenerator(config)

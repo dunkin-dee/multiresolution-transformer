@@ -1,6 +1,15 @@
-import tensorflow as tf
+"""Custom Keras layers and the learning-rate schedule.
+
+Note on ``package="scalper"``: this string is the *serialization key* Keras writes
+into saved ``.keras`` files, which are then looked up as ``"scalper>LayerName"``
+on load. It is deliberately kept at the project's original name even though the
+project has been renamed — changing it silently breaks ``load_model()`` for every
+checkpoint saved before the change. It is not a display name; leave it alone.
+"""
+
 import numpy as np
-from tensorflow.keras.layers import LayerNormalization, Dropout, Layer, Embedding, Dense
+import tensorflow as tf
+from tensorflow.keras.layers import Dense, Dropout, Embedding, Layer, LayerNormalization
 
 
 class PositionalEncoding(tf.keras.layers.Layer):

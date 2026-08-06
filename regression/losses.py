@@ -1,45 +1,22 @@
-import tensorflow as tf
-from tensorflow.keras import backend as K
+"""Loss functions and trading-oriented metrics explored during development.
 
-# # Updated losses for individual outputs (target_high or target_low separately)
-# def asymmetric_huber_loss_single(delta=1.0, underestimate_weight=1.5, overestimate_weight=0.8):
-#     """
-#     Asymmetric Huber loss for individual outputs (either target_high or target_low)
-#     - For target_high: penalize underestimation more (missing profit opportunities)
-#     - For target_low: penalize overestimation more (false risk signals)
-#     Mixed precision compatible.
-#     """
-#     def loss(y_true, y_pred):
-#         y_true = tf.reshape(y_true, [-1])  # Force 1D
-#         y_pred = tf.reshape(y_pred, [-1])
-#         # Ensure float32 for loss computation
-#         y_true = tf.cast(y_true, tf.float32)
-#         y_pred = tf.cast(y_pred, tf.float32)
-        
-#         # Cast delta to float32 first
-#         delta_f32 = tf.cast(delta, tf.float32)
-#         underestimate_weight_f32 = tf.cast(underestimate_weight, tf.float32)
-#         overestimate_weight_f32 = tf.cast(overestimate_weight, tf.float32)
-        
-#         error = y_true - y_pred
-        
-#         # Separate positive and negative errors
-#         pos_mask = tf.cast(error >= 0, tf.float32)  # underestimation (y_true > y_pred)
-#         neg_mask = tf.cast(error < 0, tf.float32)   # overestimation (y_true < y_pred)
-        
-#         # Huber loss components
-#         huber_loss = tf.where(
-#             tf.abs(error) <= delta_f32,
-#             0.5 * tf.square(error),
-#             delta_f32 * (tf.abs(error) - 0.5 * delta_f32)
-#         )
-        
-#         # Apply asymmetric weights
-#         weighted_loss = (pos_mask * underestimate_weight_f32 + neg_mask * overestimate_weight_f32) * huber_loss
-        
-#         return tf.cast(tf.reduce_mean(weighted_loss), tf.float32)
-    
-#     return loss
+Only three of these are wired into the pipeline:
+
+- ``asymmetric_huber_loss_single`` — used by ``regression.fine_tuner`` and
+  ``regression.best_noise`` to punish underestimating the high more than
+  overestimating it.
+- ``profit_precision_metric`` / ``profit_recall_metric`` — treat "predicted value
+  above threshold" as a signal and score it like a classifier, which is closer to
+  how a prediction would actually be consumed than MAE is.
+
+``regression.trainer`` uses plain MSE on both heads; that is what the committed
+results were produced with. The remaining losses and metrics are kept as a record
+of what was tried. Each entry point defines its own ``compile`` step rather than
+importing one from here.
+"""
+
+import tensorflow as tf
+
 
 def asymmetric_huber_loss_single(delta=1.0, underestimate_weight=1.5, overestimate_weight=0.8, max_error=50.0):
     """
@@ -317,167 +294,3 @@ def outlier_handling_metric(threshold=3.0):
         return tf.cast(outlier_error / (normal_error + epsilon), tf.float32)
     
     return metric
-
-# Updated compilation functions for dictionary-based outputs
-def compile_model_recommended(model):
-    """
-    Comprehensive compilation setup for trading signal model with dictionary outputs
-    Mixed precision compatible.
-    """
-    model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=0.001, clipnorm=1.0),
-        loss={
-            # For target_high: penalize underestimating profit opportunities more
-            'target_high': asymmetric_huber_loss_single(
-                delta=1.0, 
-                underestimate_weight=1.8,  # Heavy penalty for missing profits
-                overestimate_weight=0.7    # Light penalty for overestimating profits
-            ),
-            # For target_low: penalize overestimating losses more (false risk signals)
-            'target_low': asymmetric_huber_loss_single(
-                delta=1.0,
-                underestimate_weight=0.8,  # Light penalty for underestimating losses
-                overestimate_weight=1.5    # Heavy penalty for overestimating losses
-            )
-        },
-        loss_weights={
-            'target_high': 1.2,  # Slightly prioritize profit prediction
-            'target_low': 1.0
-        },
-        metrics={
-            'target_high': [
-                'mae', 
-                'mse',
-                profit_accuracy_metric(threshold=0.5),
-                profit_precision_metric(threshold=0.5),
-                profit_recall_metric(threshold=0.5),
-                mean_absolute_percentage_error_custom,
-                directional_accuracy_metric(),
-                outlier_handling_metric(threshold=3.0)
-            ],
-            'target_low': [
-                'mae',
-                'mse', 
-                risk_accuracy_metric(threshold=-0.5),
-                mean_absolute_percentage_error_custom,
-                directional_accuracy_metric(),
-                outlier_handling_metric(threshold=3.0)
-            ]
-        }
-    )
-    return model
-
-def compile_model_lightweight(model):
-    """
-    Streamlined compilation with only the most important metrics
-    Mixed precision compatible.
-    """
-    model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=0.001, clipnorm=1.0),
-        loss={
-            'target_high': asymmetric_huber_loss_single(
-                delta=1.5, 
-                underestimate_weight=2.2, 
-                overestimate_weight=0.6
-            ),
-            'target_low': asymmetric_huber_loss_single(
-                delta=1.8,
-                underestimate_weight=0.8,
-                overestimate_weight=2.5
-            )
-        },
-        loss_weights={
-            'target_high': 1.3,
-            'target_low': 1.0
-        },
-        metrics={
-            'target_high': [
-                'mae',
-                'mse',
-                profit_accuracy_metric(threshold=6.0),
-                profit_precision_metric(threshold=6.0),
-                profit_recall_metric(threshold=6.0),
-            ],
-            'target_low': [
-                'mae',
-                risk_accuracy_metric(threshold=-1.0)
-            ]
-        }
-    )
-    return model
-
-def compile_model_trading_specific(model):
-    """
-    Trading-focused compilation using trading-specific loss functions
-    Mixed precision compatible.
-    """
-    model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=0.001, clipnorm=1.0),
-        loss={
-            'target_high': trading_signal_loss_single(
-                missed_opportunity_penalty=2.5,  # Heavy penalty for missing profits
-                false_signal_penalty=1.0,        # Light penalty for false profits
-                base_weight=1.0
-            ),
-            'target_low': trading_signal_loss_single(
-                missed_opportunity_penalty=1.0,  # Light penalty for missing losses
-                false_signal_penalty=2.0,        # Heavy penalty for false risk signals
-                base_weight=1.0
-            )
-        },
-        loss_weights={
-            'target_high': 1.3,
-            'target_low': 1.0
-        },
-        metrics={
-            'target_high': [
-                'mae',
-                profit_accuracy_metric(threshold=0.5),
-                profit_precision_metric(threshold=0.5),
-                profit_recall_metric(threshold=0.5),
-                directional_accuracy_metric()
-            ],
-            'target_low': [
-                'mae',
-                risk_accuracy_metric(threshold=-0.5),
-                directional_accuracy_metric()
-            ]
-        }
-    )
-    return model
-
-# Example usage with your model
-def setup_and_compile_model(model, compilation_type='recommended'):
-    """
-    Setup mixed precision and compile model
-    """
-    # Enable mixed precision
-    try:
-        policy = tf.keras.mixed_precision.Policy('mixed_float16')
-        tf.keras.mixed_precision.set_global_policy(policy)
-        print(f"Mixed precision enabled: {policy.name}")
-    except:
-        print("Mixed precision not available, using float32")
-    
-    # Compile based on type
-    if compilation_type == 'recommended':
-        return compile_model_recommended(model)
-    elif compilation_type == 'lightweight':
-        return compile_model_lightweight(model)
-    elif compilation_type == 'trading':
-        return compile_model_trading_specific(model)
-    else:
-        raise ValueError("compilation_type must be 'recommended', 'lightweight', or 'trading'")
-
-# Make sure your final model layers have the correct dtype for mixed precision
-def ensure_model_final_layer_dtype(model):
-    """
-    Ensure the final layers use float32 for numerical stability with mixed precision
-    """
-    for layer in model.layers:
-        if 'target_high' in layer.name or 'target_low' in layer.name:
-            if hasattr(layer, 'dtype'):
-                print(f"Layer {layer.name} dtype: {layer.dtype}")
-                if layer.dtype != 'float32':
-                    print(f"Warning: {layer.name} should use dtype='float32' for mixed precision stability")
-    return model

@@ -7,7 +7,7 @@ from core.transformer_builder import (
     AttentionPooling
 )
 import tensorflow as tf
-from classification.losses import recommended_trading_loss
+from legacy.classification.losses import recommended_trading_loss
 
 # Load instruments
 instruments = os.listdir('models')

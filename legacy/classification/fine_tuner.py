@@ -8,17 +8,17 @@ import tensorflow as tf
 import os
 import json
 from datetime import datetime
-from classification.trainer import (
+from legacy.classification.trainer import (
     TrainingStateManager,
     TimeBasedTrainingManager,
     ResumableTrainingCallback,
     restore_optimizer_state,
     create_fresh_training_setup
 )
-from classification.datasets import get_datasets_and_steps
+from legacy.classification.datasets import get_datasets_and_steps
 from core.transformer_builder import WarmupCosineDecay
 from core.modeler import create_model
-from classification.losses import recommended_trading_loss
+from legacy.classification.losses import recommended_trading_loss
 from constants.global_constants import LR, WARMUP, DECAY
 
 

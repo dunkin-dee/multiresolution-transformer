@@ -12,7 +12,7 @@ from core.transformer_builder import (
     AddTypeEmbedding, 
     AttentionPooling
 )
-from classification.losses import recommended_trading_loss
+from legacy.classification.losses import recommended_trading_loss
 from core.modeler import create_model
 
 custom_objects = {

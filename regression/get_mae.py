@@ -1,46 +1,75 @@
+"""Random-walk baseline: how well does "tomorrow looks like today" do?
+
+Usage::
+
+    python -m regression.get_mae [--instruments GBPUSD#]
+
+Predicts each candle's normalised close as the previous candle's normalised
+close, and reports MAE/MSE. This is the number the trained model has to beat to
+be worth anything — reported alongside the model's own error by
+``regression.test``.
+"""
+
+import argparse
 import os
-import pandas as pd
 from datetime import datetime
-import numpy as np
+
+import pandas as pd
 from sklearn.metrics import mean_absolute_error, mean_squared_error
+
+from constants.global_constants import NORMALIZING_WINDOW_SIZE
 from core.working_data import clean_five_minute_data, normalize_by_window
-from constants.global_constants import *
 
-starting_dir = "data/final_data"
-working_path = "data/experimenting"
-instruments = os.listdir(starting_dir)
-instruments = ['GBPUSD#']
+DEFAULT_SOURCE_DIR = "data/final_data"
+OHLC = ['open', 'high', 'low', 'close']
 
-for instrument in instruments:
-    df = pd.read_csv(f"{starting_dir}/{instrument}/five_minutes.csv")
-    print(f"Processing {instrument}...")
-    print(f"  5 minute Original data: {len(df)} rows")
-    print(f"  5 minute Time range: {datetime.fromtimestamp(df['time'].min())} to {datetime.fromtimestamp(df['time'].max())}")
+
+def random_walk_baseline(instrument, source_dir):
+    """Compute MAE/MSE for the previous-close predictor on one instrument."""
+    df = pd.read_csv(f"{source_dir}/{instrument}/five_minutes.csv")
+    print(f"\nProcessing {instrument}...")
+    print(f"  raw: {len(df)} rows | "
+          f"{datetime.fromtimestamp(df['time'].min())} to "
+          f"{datetime.fromtimestamp(df['time'].max())}")
+
     df = clean_five_minute_data(df)
-    print(f"  Cleaned data: {len(df)} rows")
+    print(f"  cleaned: {len(df)} rows")
+
     df = normalize_by_window(
-        df, 
-        window_size=NORMALIZING_WINDOW_SIZE, 
-        low_col='low',
-        high_col='high',
-        normalizing_cols=[
-            'open',
-            'high',
-            'low',
-            'close'
-        ],
-        label_cols=['open', 'close'])
-    
-    df['label'] = df['close_normalized_for_label'].shift(1)
+        df,
+        window_size=NORMALIZING_WINDOW_SIZE,
+        low_col='low', high_col='high',
+        normalizing_cols=OHLC,
+        label_cols=['open', 'close'],
+    )
 
-    df = df.dropna(subset=['label'])
+    df['prediction'] = df['close_normalized_for_label'].shift(1)
+    df = df.dropna(subset=['prediction'])
 
-
-    y_true = df['close_normalized_for_label']
-    y_pred = df['label']
-
+    y_true, y_pred = df['close_normalized_for_label'], df['prediction']
     mae = mean_absolute_error(y_true, y_pred)
     mse = mean_squared_error(y_true, y_pred)
 
-    print(f"Random Walk MAE: {mae:.6f}")
-    print(f"Random Walk MSE: {mse:.6f}")
+    print(f"  Random-walk MAE: {mae:.6f}")
+    print(f"  Random-walk MSE: {mse:.6f}")
+    return {'instrument': instrument, 'mae': mae, 'mse': mse}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--source-dir", default=DEFAULT_SOURCE_DIR)
+    parser.add_argument("--instruments", nargs="*", default=None,
+                        help="Defaults to all instruments under --source-dir.")
+    args = parser.parse_args()
+
+    instruments = args.instruments or sorted(
+        d for d in os.listdir(args.source_dir)
+        if os.path.isdir(os.path.join(args.source_dir, d))
+    )
+
+    for instrument in instruments:
+        random_walk_baseline(instrument, args.source_dir)
+
+
+if __name__ == "__main__":
+    main()
